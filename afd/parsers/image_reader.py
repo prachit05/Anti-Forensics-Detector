@@ -66,6 +66,32 @@ def open_image(path: Path):
     return pytsk3.Img_Info(str(path))
 
 
+BITLOCKER_SIG = b"-FVE-FS-"   # OEM ID at byte 3 of a BitLocker volume's boot sector
+
+
+def find_bitlocker_volumes(img) -> list[dict]:
+    """List partitions encrypted with BitLocker.
+
+    Windows 11 turns on device encryption automatically on TPM machines, so a
+    modern image may have an encrypted C:. Its contents cannot be read without the
+    recovery key, so the tool must report this rather than silently find nothing.
+    """
+    found = []
+    try:
+        vol = pytsk3.Volume_Info(img)
+    except OSError:
+        return found
+    block = vol.info.block_size
+    for part in vol:
+        if part.len < 2048:
+            continue
+        offset = part.start * block
+        if img.read(offset + 3, 8) == BITLOCKER_SIG:
+            found.append({"offset": offset, "size": part.len * block,
+                          "desc": part.desc.decode(errors="replace")})
+    return found
+
+
 def find_ntfs_volumes(img) -> list[dict]:
     """List NTFS partitions as {offset, size, desc}. Falls back to offset 0
     (a partition image with no partition table)."""
@@ -97,7 +123,8 @@ def find_ntfs_volumes(img) -> list[dict]:
 
 
 def pick_windows_volume(img, volumes: list[dict]) -> dict | None:
-    """The system volume is the NTFS partition that has a /Windows folder."""
+    """The system volume is the NTFS partition that has a /Windows folder.
+    Returns None if no partition has one (e.g. C: is BitLocker-encrypted)."""
     for v in volumes:
         fs = pytsk3.FS_Info(img, offset=v["offset"])
         try:
@@ -105,7 +132,7 @@ def pick_windows_volume(img, volumes: list[dict]) -> dict | None:
             return v
         except OSError:
             continue
-    return volumes[0] if volumes else None
+    return None
 
 
 def _copy_file(fs_file, dest: Path) -> int:
@@ -134,7 +161,15 @@ def extract_artifacts(image_path: Path, out_dir: Path, case=None) -> list[Path]:
     volumes = find_ntfs_volumes(img)
     vol = pick_windows_volume(img, volumes)
     if vol is None:
-        raise RuntimeError("No NTFS volume found in image")
+        encrypted = find_bitlocker_volumes(img)
+        if case:
+            case.log("no_windows_volume", ntfs_volumes=volumes, bitlocker_volumes=encrypted)
+        if encrypted:
+            sizes = ", ".join(f"{v['size'] / 2**30:.1f} GB at offset {v['offset']}" for v in encrypted)
+            raise RuntimeError(
+                f"Windows volume is BitLocker-encrypted ({sizes}). Decrypt it with the "
+                "recovery key (or capture the system live) before analysis.")
+        raise RuntimeError("No NTFS volume with a Windows folder found in image")
     fs = pytsk3.FS_Info(img, offset=vol["offset"])
     if case:
         case.log("volume_selected", image=str(image_path), **vol)

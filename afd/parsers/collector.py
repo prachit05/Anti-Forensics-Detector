@@ -14,7 +14,9 @@ from pathlib import Path
 
 from afd.parsers.image_reader import extract_artifacts
 
-IMAGE_EXTENSIONS = {".e01", ".ex01", ".dd", ".raw", ".img", ".001"}
+# .vhd only works when it is a *fixed* VHD (raw disk + 512-byte footer), e.g. made
+# with Convert-VHD -VHDType Fixed. Dynamic VHD/VHDX must be converted first.
+IMAGE_EXTENSIONS = {".e01", ".ex01", ".dd", ".raw", ".img", ".001", ".vhd"}
 
 
 @dataclass
