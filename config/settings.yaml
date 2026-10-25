@@ -62,3 +62,100 @@ detection:
     min_missing_records: 1       # record-ID gaps smaller than this are ignored
     late_start_days: 1.0         # log starts this much later than the System log = history missing
     peer_log: 'System.evtx'      # the log used as the "when did this machine start" reference
+
+# ---------------------------------------------------------------- Stage 4 detectors
+  file_wiping:
+    medium_at: 4
+    high_at: 6
+    weights:
+      sdelete_mangled_name: 5      # 26-char repeating sequence (e.g. AAAAAAA.AAA)
+      resident_zero_fill: 4        # deleted resident content is all 0x00
+      resident_uniform_byte: 4     # deleted resident content is repeating pattern (0xFF, etc)
+      random_mangled_name: 3       # deleted entry has high-entropy random name
+      zero_size_deleted: 1         # deleted file truncated to 0 size
+      benign_temp_name: -2         # temp files often have GUID or random-like names
+    min_resident_check_bytes: 8    # don't test uniform pattern on fewer bytes than this
+
+  freespace:
+    medium_at: 4
+    high_at: 6
+    chunk_size_bytes: 1048576      # 1 MB analysis chunk
+    max_chunks_to_sample: 500      # limit scan time on large disks
+    uniform_threshold_pct: 98.0    # % of bytes matching single value (0x00, 0xFF)
+    high_entropy_threshold: 7.95   # Shannon entropy threshold for pseudorandom wipe
+    min_consecutive_chunks: 3      # contiguous chunks needed to flag an area
+    weights:
+      massive_zero_fill: 4
+      uniform_pattern_fill: 4
+      massive_high_entropy: 4
+
+  hidden_files:
+    medium_at: 4
+    high_at: 6
+    weights:
+      ads_pe_executable: 6         # MZ executable header inside Alternate Data Stream (HIGH)
+      ads_script: 4                # script (.ps1, .vbs, .bat) inside ADS (MEDIUM)
+      ads_large_stream: 4          # ADS larger than 1MB or base file (MEDIUM)
+      ads_unknown: 2               # unexpected named stream (LOW)
+      type_spoof_executable: 6     # MZ executable with benign extension (.txt, .jpg, .log) (HIGH)
+      type_spoof_archive: 4        # PK archive with non-archive extension (MEDIUM)
+    benign_ads_names:
+      - 'zone.identifier'
+      - 'favicon'
+      - 'smartscreen'
+      - 'encryptable'
+      - 'wofcompresseddata'
+    large_stream_threshold_bytes: 1048576  # 1 MB
+
+  tool_traces:
+    medium_at: 4
+    high_at: 6
+    weights:
+      prefetch_executed: 6         # tool executed recently according to prefetch (HIGH)
+      userassist_executed: 6       # tool executed according to NTUSER.DAT UserAssist (HIGH)
+      registry_installed: 4        # tool listed in SOFTWARE Uninstall keys (MEDIUM)
+      run_mru_command: 4           # tool command in RunMRU (MEDIUM)
+      mft_file_present: 2          # tool binary or folder found in MFT (LOW)
+    known_tools:
+      sdelete:
+        names: ['sdelete.exe', 'sdelete64.exe']
+        category: 'Secure Deletion'
+        description: 'Sysinternals SDelete (file and free-space wiper)'
+      ccleaner:
+        names: ['ccleaner.exe', 'ccleaner64.exe']
+        category: 'System Cleaner / Wiper'
+        description: 'Piriform CCleaner (log, artifact and free-space wiper)'
+      eraser:
+        names: ['eraser.exe']
+        category: 'Secure Deletion'
+        description: 'Eraser secure file deletion utility'
+      bleachbit:
+        names: ['bleachbit.exe', 'bleachbit_console.exe']
+        category: 'System Cleaner / Wiper'
+        description: 'BleachBit open-source system cleaner'
+      timestomp:
+        names: ['timestomp.exe', 'newfiletime.exe', 'newfiletime_x64.exe', 'setmace.exe', 'attributechanger.exe']
+        category: 'Timestomping'
+        description: 'Timestamp modification utility'
+      wevtutil:
+        names: ['wevtutil.exe']
+        category: 'Log Manipulation'
+        description: 'Windows Event Log utility (often used to clear logs)'
+      cipher:
+        names: ['cipher.exe']
+        category: 'Disk Wiper'
+        description: 'Windows built-in cipher /w free space wiping command'
+
+# ---------------------------------------------------------------- Stage 5 analysis & ML
+  analysis:
+    correlation_window_minutes: 30.0   # match tool executions to actions within this window
+    campaign_window_hours: 2.0         # match multi-vector activities within this window
+    min_campaign_techniques: 3         # minimum distinct techniques to declare a campaign
+    corroboration_score_boost: 2       # score increase when findings corroborate each other
+
+  ml:
+    log_contamination: 0.01            # expected % of anomalous events
+    mft_contamination: 0.005           # expected % of anomalous MFT records
+    min_records_for_ml: 50             # minimum events/records required to fit Isolation Forest
+
+

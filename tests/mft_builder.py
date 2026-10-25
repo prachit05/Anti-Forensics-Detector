@@ -21,12 +21,18 @@ def ft(dt: datetime, sub_ticks: int = 0) -> int:
     return whole * 10_000_000 + sub_ticks
 
 
-def _attr(atype: int, content: bytes) -> bytes:
-    """A resident, unnamed attribute."""
-    body_off = 0x18
+def _attr(atype: int, content: bytes, name: str = "") -> bytes:
+    """A resident attribute (named or unnamed)."""
+    name_bytes = name.encode("utf-16-le") if name else b""
+    name_len = len(name)
+    name_off = 0x18 if name else 0
+    body_off = (0x18 + len(name_bytes) + 7) // 8 * 8
     length = (body_off + len(content) + 7) // 8 * 8
-    head = struct.pack("<IIBBHHH", atype, length, 0, 0, 0, 0, 0)
+    head = struct.pack("<IIBBHHH", atype, length, 0, name_len, name_off, 0, 0)
     head += struct.pack("<IHBB", len(content), body_off, 0, 0)
+    if name:
+        head += name_bytes
+        head = head.ljust(body_off, b"\x00")
     return (head + content).ljust(length, b"\x00")
 
 
@@ -42,13 +48,15 @@ def _fn(parent: int, parent_seq: int, times: tuple, name: str, namespace: int = 
 
 
 def build_record(entry: dict) -> bytes:
-    """entry keys: name, parent, si=(c,m,mc,a), fn=(c,m,mc,a), in_use, is_dir, seq, parent_seq."""
+    """entry keys: name, parent, si=(c,m,mc,a), fn=(c,m,mc,a), in_use, is_dir, seq, parent_seq, data, ads=[(name, bytes)]."""
     seq = entry.get("seq", 1)
     flags = (1 if entry.get("in_use", True) else 0) | (2 if entry.get("is_dir") else 0)
     attrs = _attr(0x10, _si(entry["si"]))
     attrs += _attr(0x30, _fn(entry["parent"], entry.get("parent_seq", 1), entry["fn"], entry["name"]))
     if not entry.get("is_dir"):
         attrs += _attr(0x80, entry.get("data", b"hello"))
+    for sname, sdata in entry.get("ads", []):
+        attrs += _attr(0x80, sdata, name=sname)
     attrs += struct.pack("<I", 0xFFFFFFFF) + b"\x00" * 4
 
     rec = bytearray(RECORD)
