@@ -65,6 +65,23 @@ class Case:
         self.log("evidence_hashed", **record)
         return record
 
+    def read_log(self) -> list[dict]:
+        """Return every custody-log entry, oldest first."""
+        if not self.log_file.exists():
+            return []
+        with open(self.log_file, encoding="utf-8") as fh:
+            return [json.loads(line) for line in fh if line.strip()]
+
+    def load_evidence_from_log(self) -> list[dict]:
+        """Rebuild self.evidence from the custody log (used when a saved case is reopened)."""
+        keys = ("path", "size", "source", "md5", "sha256")
+        seen = {}
+        for entry in self.read_log():
+            if entry.get("action") == "evidence_hashed":
+                seen[entry["path"]] = {k: entry.get(k) for k in keys}
+        self.evidence = list(seen.values())
+        return self.evidence
+
     def verify_evidence(self) -> list[dict]:
         """Re-hash every recorded file and report whether it still matches."""
         results = []

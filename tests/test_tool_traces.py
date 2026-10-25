@@ -137,3 +137,31 @@ def test_mft_tool_binary_detected():
     findings = tool_traces.detect(mft=mft_df)
     assert len(findings) == 1
     assert "sdelete.exe" in findings[0].title
+
+
+def _mft_row(entry, name, path):
+    return {"entry": entry, "name": name, "path": path, "si_modified": 133000000000000000,
+            "si_created": 133000000000000000, "in_use": True, "is_dir": False}
+
+
+def test_builtin_tools_in_windows_folder_are_not_reported():
+    """Every Windows install has cipher.exe and wevtutil.exe in System32 (and WinSxS)."""
+    mft_df = pd.DataFrame([
+        _mft_row(100, "cipher.exe", r"\Windows\System32\cipher.exe"),
+        _mft_row(101, "wevtutil.exe", r"\Windows\System32\wevtutil.exe"),
+        _mft_row(102, "wevtutil.exe", r"\Windows\WinSxS\amd64_wevtutil_31bf\wevtutil.exe"),
+    ])
+    assert tool_traces.detect(mft=mft_df) == []
+
+
+def test_builtin_tool_copied_elsewhere_is_reported():
+    mft_df = pd.DataFrame([_mft_row(100, "cipher.exe", r"\Users\Public\cipher.exe")])
+    assert len(tool_traces.detect(mft=mft_df)) == 1
+
+
+def test_builtin_tool_execution_is_discounted():
+    df = pd.DataFrame([{"pf_file": "WEVTUTIL.EXE-1234ABCD.pf", "exe_name": "WEVTUTIL.EXE", "run_count": 1,
+                        "run_index": 0, "run_time": datetime(2026, 10, 24, 14, 0, 0, tzinfo=timezone.utc)}])
+    [f] = tool_traces.detect(prefetch_df=df)
+    assert f.confidence == Confidence.MEDIUM
+    assert any("Built-in Windows tool" in n for n in f.benign_notes)

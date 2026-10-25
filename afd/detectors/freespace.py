@@ -27,6 +27,12 @@ Physical signatures in unallocated space:
 
 Honest limits
 -------------
+- Only *unallocated* clusters are sampled: the NTFS $Bitmap file has one bit per cluster
+  (1 = in use), and only 1 MB chunks whose clusters are all free are read. Sampling the
+  whole volume would mix in allocated compressed files (CAB, ZIP, WinSxS) and look random.
+- Zero-filled free space is only LOW on its own: space that was never written (a new VM
+  disk, a fresh install, SSD TRIM) also reads as zeros. 'cipher /w' ends with a random pass,
+  so after a complete run free space is mostly random, not 0xFF.
 - Analysis requires access to the raw disk image (E01, RAW, DD, fixed VHD) or an
   exported unallocated space stream. If only exported files ($MFT, .evtx) are
   provided, free-space analysis cannot be performed.
@@ -53,9 +59,11 @@ DEFAULT_CONFIG = {
     "max_chunks_to_sample": 500,      # up to 500 MB sampled
     "uniform_threshold_pct": 98.0,    # 98% of chunk is single byte
     "high_entropy_threshold": 7.96,   # near maximal entropy (random wipe)
-    "min_consecutive_chunks": 3,
+    "min_consecutive_chunks": 3,      # minimum number of matching chunks before any finding
+    "zero_min_fraction": 0.4,         # share of sampled free chunks that must be zero-filled
+    "random_min_fraction": 0.6,       # share that must be random (deleted ZIP/CAB remnants are also random)
     "weights": {
-        "massive_zero_fill": 5,
+        "massive_zero_fill": 2,       # LOW: never-written space is zeros too
         "uniform_pattern_fill": 5,
         "massive_high_entropy": 4,
     },
@@ -115,8 +123,33 @@ def analyze_unallocated_stream(
     return results
 
 
+def free_chunk_offsets(bitmap: bytes, cluster_size: int, chunk_size: int, max_chunks: int) -> tuple[list[int], int]:
+    """From the NTFS $Bitmap (bit i = cluster i in use, least significant bit first), return
+    byte offsets of up to max_chunks fully unallocated chunks, spread evenly across the volume,
+    and the total number of fully unallocated chunks."""
+    per_chunk = max(1, chunk_size // cluster_size)
+    bits = np.unpackbits(np.frombuffer(bitmap, dtype=np.uint8), bitorder="little")
+    n_chunks = len(bits) // per_chunk
+    used = bits[: n_chunks * per_chunk].reshape(n_chunks, per_chunk).any(axis=1)
+    free = np.flatnonzero(~used)
+    if len(free) > max_chunks:
+        free = free[np.linspace(0, len(free) - 1, max_chunks).astype(int)]
+    return [int(c) * per_chunk * cluster_size for c in free], int((~used).sum())
+
+
+def _read_bitmap(img, vol_offset: int) -> tuple[bytes, int] | None:
+    """Return ($Bitmap contents, cluster size) of the NTFS volume, or None if unreadable."""
+    try:
+        import pytsk3
+        fs = pytsk3.FS_Info(img, offset=vol_offset)
+        f = fs.open("/$Bitmap")
+        return f.read_random(0, f.info.meta.size), fs.info.block_size
+    except Exception:
+        return None
+
+
 def detect_from_image(image_path: Path, cfg: dict | None = None) -> list[Finding]:
-    """Inspect disk image unallocated/raw sectors for free-space wiping signatures."""
+    """Sample the unallocated clusters of the Windows volume for free-space wiping signatures."""
     cfg = merge_config(DEFAULT_CONFIG, detector_settings("freespace"), cfg or {})
     image_path = Path(image_path)
     if not image_path.is_file():
@@ -144,8 +177,24 @@ def detect_from_image(image_path: Path, cfg: dict | None = None) -> list[Finding
         except Exception:
             return b""
 
-    sample_results = analyze_unallocated_stream(read_func, vol_size, cfg)
-    return _evaluate_samples(sample_results, f"disk image {image_path.name}", cfg)
+    chunk = cfg.get("chunk_size_bytes", 1048576)
+    bitmap = _read_bitmap(img, vol_offset) if vol else None
+    if bitmap is None:
+        # No allocation map: sample everything, but allocated data is mixed in, so cap at LOW
+        sample_results = analyze_unallocated_stream(read_func, vol_size, cfg)
+        return _evaluate_samples(sample_results, f"disk image {image_path.name}", cfg, scope="whole volume")
+
+    offsets, free_total = free_chunk_offsets(bitmap[0], bitmap[1], chunk, cfg.get("max_chunks_to_sample", 500))
+    sample_results = []
+    for off in offsets:
+        data = read_func(off, chunk)
+        if not data:
+            continue
+        entropy, uniformity, dom_byte = calculate_entropy_and_uniformity(data)
+        sample_results.append({"offset": off, "size": len(data), "entropy": round(entropy, 4),
+                               "uniformity_pct": round(uniformity, 2), "dominant_byte": dom_byte})
+    return _evaluate_samples(sample_results, f"disk image {image_path.name}", cfg,
+                             scope="unallocated", free_chunks_total=free_total)
 
 
 def detect_from_buffer(data: bytes, source_name: str = "unallocated space dump", cfg: dict | None = None) -> list[Finding]:
@@ -160,10 +209,16 @@ def detect_from_buffer(data: bytes, source_name: str = "unallocated space dump",
     return _evaluate_samples(sample_results, source_name, cfg)
 
 
-def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list[Finding]:
-    """Evaluate chunk metrics and create Findings if wiped signatures are found."""
+def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict,
+                      scope: str = "unallocated", free_chunks_total: int | None = None) -> list[Finding]:
+    """Evaluate chunk metrics and create Findings if wiped signatures are found.
+
+    scope: "unallocated" (only free clusters were sampled) or "whole volume" (no $Bitmap:
+    allocated files are mixed in, so every finding is capped at LOW)."""
     if not samples:
         return []
+    zero_min = cfg.get("zero_min_fraction", 0.4)
+    random_min = cfg.get("random_min_fraction", 0.6)
 
     weights = cfg["weights"]
     uniform_pct_thresh = cfg.get("uniform_threshold_pct", 98.0)
@@ -181,7 +236,7 @@ def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list
     findings: list[Finding] = []
 
     # Check 1: Massive zero-fill (sdelete -c / -z, cipher /w pass 1)
-    if len(zero_chunks) >= min_consecutive and (len(zero_chunks) / total_sampled) >= 0.4:
+    if len(zero_chunks) >= min_consecutive and (len(zero_chunks) / total_sampled) >= zero_min:
         score = weights["massive_zero_fill"]
         pct = (len(zero_chunks) / total_sampled) * 100
         findings.append(Finding(
@@ -195,7 +250,8 @@ def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list
             artifact="Unallocated space clusters",
             reasons=[
                 f"{len(zero_chunks)} of {total_sampled} sampled chunks ({pct:.1f}%) consist of "
-                "pure 0x00 bytes (zero-fill), characteristic of 'sdelete -z' or 'cipher /w' pass 1.",
+                "pure 0x00 bytes (zero-fill), consistent with 'sdelete -z'.",
+                "Zero-fill alone is weak: look for a wiping tool's execution trace (Module 6).",
             ],
             benign_notes=[
                 "Freshly formatted partitions, new VM disks, or SSDs with active TRIM "
@@ -224,17 +280,18 @@ def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list
             subject=subject_name,
             artifact="Unallocated space clusters",
             reasons=[
-                f"Found {len(ff_chunks)} chunks filled with 0xFF. Normal disk usage never fills free "
-                "space with uniform 0xFF; this matches 'cipher /w' pass 2.",
+                f"Found {len(ff_chunks)} chunks filled with 0xFF. Normal disk use does not fill free "
+                "space with 0xFF; wipers use it as an overwrite pattern ('cipher /w' pass 2, left "
+                "behind if the run was stopped before its random pass).",
             ],
-            benign_notes=["Virtually no benign operating system process writes 0xFF across free space."],
+            benign_notes=["Some raw flash media read as 0xFF when erased; check the media type."],
             evidence={"ff_chunks": len(ff_chunks), "total_sampled": total_sampled},
             event_time=None,
             time_meaning="Free space wipe leaves no individual event time",
         ))
 
     # Check 3: Massive high-entropy pseudorandom pass (cipher /w pass 3, Eraser)
-    if len(random_chunks) >= min_consecutive and (len(random_chunks) / total_sampled) >= 0.3:
+    if len(random_chunks) >= min_consecutive and (len(random_chunks) / total_sampled) >= random_min:
         score = weights["massive_high_entropy"]
         pct = (len(random_chunks) / total_sampled) * 100
         findings.append(Finding(
@@ -247,16 +304,27 @@ def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list
             subject=subject_name,
             artifact="Unallocated space clusters",
             reasons=[
-                f"{len(random_chunks)} of {total_sampled} chunks have Shannon entropy >= {entropy_thresh} "
-                "with no valid file headers, characteristic of random free-space wiping passes.",
+                f"{len(random_chunks)} of {total_sampled} chunks ({pct:.1f}%) have Shannon entropy "
+                f">= {entropy_thresh}, consistent with a random overwrite pass ('cipher /w' pass 3, "
+                "Eraser, CCleaner 'Wipe Free Space').",
             ],
             benign_notes=[
-                "Full-disk encryption (BitLocker) or large encrypted container files also exhibit "
-                "high entropy, but encrypted volumes have distinctive header structures.",
+                "Deleted compressed files (ZIP, CAB, Windows Update downloads) and encrypted containers "
+                "also leave random-looking remnants; only a large share of free space is reported.",
             ],
             evidence={"random_chunks": len(random_chunks), "total_sampled": total_sampled, "percentage": round(pct, 1)},
             event_time=None,
             time_meaning="Free space wipe leaves no individual event time",
         ))
 
+    for f in findings:
+        f.evidence["scope"] = scope
+        if free_chunks_total is not None:
+            f.evidence["free_chunks_total"] = free_chunks_total
+        if scope != "unallocated":
+            f.score = min(f.score, cfg["medium_at"] - 1)
+            f.confidence = confidence_from_score(f.score, cfg["medium_at"], cfg["high_at"])
+            f.artifact = "Whole volume sample (allocation map not readable)"
+            f.benign_notes.append("Allocated files were sampled too, because the NTFS $Bitmap could not "
+                                  "be read; confidence is capped at LOW.")
     return assign_ids(sort_findings(findings))

@@ -8,22 +8,28 @@ Isolated forensic artifacts often have alternative, innocent explanations:
   - Event log gaps can happen during system reboots or power loss.
 
 However, the forensic principle of *multi-source corroboration* states that when independent
-artifacts from different OS subsystems corroborate each other within the same timeframe,
-the probability of an innocent explanation drops exponentially:
+artifacts from different OS subsystems agree with each other within the same timeframe,
+an innocent explanation becomes much less likely:
 
 1. Direct Tool-to-Action Correlation:
-   - Tool Execution (Prefetch / UserAssist) + File Destruction (MFT deleted entries):
+   - Tool Execution (Prefetch / UserAssist / RunMRU) + File Destruction (MFT deleted entries):
      e.g., SDelete executed at 14:15, and at 14:18 MFT entries show 'ZZZZZZZZ.ZZZ' mangling.
-     The tool trace proves capability/intent, and the MFT trace proves the act.
+     The tool trace shows the capability was used; the MFT trace shows the act.
    - Tool Execution + Timestomping:
      e.g., NewFileTime launched at 11:20, and files show $SI altered at 11:22.
    - Tool Execution + Log Clearing:
      e.g., Wevtutil command in RunMRU/Prefetch + Event 1102 logged at 15:30.
+   Only *execution* traces raise an action's confidence. A tool binary that merely sits on
+   disk, or an install record, is added as context but changes nothing: having a tool is
+   not using it.
 
 2. Coordinated Anti-Forensics Campaign:
    - When 3 or more distinct anti-forensic techniques occur in close succession
-     (e.g. Timestomping + Log Clearing + File Wiping within 2 hours), this represents
-     a deliberate, multi-stage cover-up operation.
+     (e.g. Timestomping + Log Clearing + File Wiping within 2 hours), this suggests
+     a deliberate, multi-stage cover-up.
+   - Only findings at campaign_min_confidence (default MEDIUM) or above count. LOW findings
+     are mostly ordinary system activity (installers, updates, built-in tools), and three of
+     them together are still ordinary.
 
 Honest limits
 -------------
@@ -31,21 +37,28 @@ Honest limits
   or if event logs were cleared completely before logging could occur, correlation links
   may be partial.
 - Correlation never asserts legal culpability or user identity beyond the recorded Windows
-  user account; it reports strong technical corroboration.
+  user account; it reports technical corroboration.
 """
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Any
 
 from afd.core.config import detector_settings, merge_config
-from afd.core.finding import Confidence, Finding, assign_ids, confidence_from_score, sort_findings
+from afd.core.finding import Confidence, Finding, assign_ids, sort_findings
 
 DEFAULT_CONFIG = {
     "correlation_window_minutes": 30.0,
     "campaign_window_hours": 2.0,
     "min_campaign_techniques": 3,
+    "campaign_min_confidence": "MEDIUM",
     "corroboration_score_boost": 2,
+}
+
+# Which tool names explain which kind of action
+_TOOL_ACTIONS = {
+    "file_wiping": ("sdelete", "eraser", "bleachbit", "ccleaner"),
+    "timestomp": ("timestomp", "newfiletime", "attributechanger", "setmace"),
+    "log_wiping": ("wevtutil", "ccleaner", "bleachbit"),
 }
 
 
@@ -55,6 +68,12 @@ def _get_time(f: Finding) -> datetime | None:
     if f.event_time.tzinfo is None:
         return f.event_time.replace(tzinfo=timezone.utc)
     return f.event_time.astimezone(timezone.utc)
+
+
+def _is_execution_trace(f: Finding) -> bool:
+    """Prefetch / UserAssist / RunMRU show the tool was run; MFT presence or an install key do not."""
+    t = f.technique.lower()
+    return "exec" in t or "runmru" in t
 
 
 def correlate_findings(
@@ -71,24 +90,22 @@ def correlate_findings(
     corr_window = timedelta(minutes=cfg.get("correlation_window_minutes", 30.0))
     camp_window = timedelta(hours=cfg.get("campaign_window_hours", 2.0))
     min_techniques = cfg.get("min_campaign_techniques", 3)
+    camp_min_conf = Confidence[str(cfg.get("campaign_min_confidence", "MEDIUM")).upper()]
     boost = cfg.get("corroboration_score_boost", 2)
 
-    # Separate tool traces, file wipes, timestomps, and log wipes
+    # Separate tool traces from the actions they could explain
     tool_findings = [f for f in findings if f.module == "tool_traces" and f.event_time is not None]
-    action_findings = [f for f in findings if f.module in ("file_wiping", "timestomp", "log_wiping") and f.event_time is not None]
+    action_findings = [f for f in findings if f.module in _TOOL_ACTIONS and f.event_time is not None]
 
     corroborated_pairs = set()
 
     for tool_f in tool_findings:
         t_time = _get_time(tool_f)
-        if not t_time:
-            continue
         tool_subject = tool_f.subject.lower()
+        executed = _is_execution_trace(tool_f)
 
         for act_f in action_findings:
             a_time = _get_time(act_f)
-            if not a_time:
-                continue
 
             # Check temporal window: within corr_window before or after
             time_diff = abs((a_time - t_time).total_seconds())
@@ -98,69 +115,49 @@ def correlate_findings(
             pair_key = (tool_f.id, act_f.id)
             if pair_key in corroborated_pairs:
                 continue
+            if not any(name in tool_subject for name in _TOOL_ACTIONS[act_f.module]):
+                continue
+            corroborated_pairs.add(pair_key)
 
-            # Assess causal links
-            is_match = False
-            match_reason = ""
-
-            # SDelete / Eraser -> File Wiping
-            if act_f.module == "file_wiping" and ("sdelete" in tool_subject or "eraser" in tool_subject or "bleachbit" in tool_subject):
-                is_match = True
-                match_reason = (
-                    f"Strongly corroborated: {tool_f.title} occurred within "
-                    f"{time_diff / 60:.1f} minutes of this file wiping event ({tool_f.artifact})."
+            if not executed:
+                # Presence only: note it for the examiner, but do not change the confidence
+                act_f.reasons.append(
+                    f"Context: {tool_f.title} ({tool_f.artifact}) is dated within {time_diff / 60:.1f} minutes. "
+                    "This shows the tool was present, not that it was run."
                 )
+                continue
 
-            # Timestomp tools -> Timestomping
-            elif act_f.module == "timestomp" and ("timestomp" in tool_subject or "newfiletime" in tool_subject or "attributechanger" in tool_subject):
-                is_match = True
-                match_reason = (
-                    f"Strongly corroborated: Timestamp utility '{tool_f.subject}' executed within "
-                    f"{time_diff / 60:.1f} minutes of this timestomped file ({tool_f.artifact})."
-                )
+            act_f.score += boost
+            act_f.reasons.append(
+                f"Corroborated: {tool_f.title} ({tool_f.artifact}) is within "
+                f"{time_diff / 60:.1f} minutes of this {act_f.technique.lower()} finding."
+            )
+            if act_f.confidence == Confidence.LOW:
+                act_f.confidence = Confidence.MEDIUM
+            elif act_f.confidence == Confidence.MEDIUM and act_f.score >= 5:
+                act_f.confidence = Confidence.HIGH
 
-            # Wevtutil -> Log Wiping
-            elif act_f.module == "log_wiping" and "wevtutil" in tool_subject:
-                is_match = True
-                match_reason = (
-                    f"Strongly corroborated: Event log manipulation utility '{tool_f.subject}' "
-                    f"ran within {time_diff / 60:.1f} minutes of this log clearing/gap event."
-                )
+            # Also annotate the tool finding
+            tool_f.reasons.append(
+                f"Corroborated: {act_f.technique} finding {act_f.id or act_f.title} is dated "
+                f"{_get_time(act_f):%Y-%m-%d %H:%M:%S} UTC, within the correlation window."
+            )
 
-            if is_match:
-                corroborated_pairs.add(pair_key)
-                # Boost confidence of the action finding
-                act_f.score += boost
-                act_f.reasons.append(match_reason)
-                if act_f.confidence == Confidence.LOW:
-                    act_f.confidence = Confidence.MEDIUM
-                elif act_f.confidence == Confidence.MEDIUM and act_f.score >= 5:
-                    act_f.confidence = Confidence.HIGH
-
-                # Also annotate the tool finding
-                tool_f.reasons.append(
-                    f"Corroborated: Evidence of resulting {act_f.technique} activity was detected at {act_f.event_time}."
-                )
-
-    # Detect Coordinated Anti-Forensics Campaigns
+    # Detect Coordinated Anti-Forensics Campaigns (from MEDIUM/HIGH findings only)
     campaign_findings: list[Finding] = []
-    dated_findings = [f for f in findings if f.event_time is not None]
-    dated_findings.sort(key=lambda f: _get_time(f) or datetime.min.replace(tzinfo=timezone.utc))
+    dated_findings = [f for f in findings if f.event_time is not None and f.confidence >= camp_min_conf]
+    dated_findings.sort(key=_get_time)
 
     if len(dated_findings) >= min_techniques:
         start_idx = 0
         while start_idx < len(dated_findings):
             start_f = dated_findings[start_idx]
             s_time = _get_time(start_f)
-            if not s_time:
-                start_idx += 1
-                continue
 
             window_group = [start_f]
             for j in range(start_idx + 1, len(dated_findings)):
                 next_f = dated_findings[j]
-                n_time = _get_time(next_f)
-                if n_time and (n_time - s_time) <= camp_window:
+                if (_get_time(next_f) - s_time) <= camp_window:
                     window_group.append(next_f)
                 else:
                     break
@@ -173,9 +170,10 @@ def correlate_findings(
 
                 mod_list_str = ", ".join(sorted(unique_modules))
                 camp_reasons = [
-                    f"Detected {len(window_group)} anti-forensic events across {len(unique_modules)} distinct "
-                    f"techniques ({mod_list_str}) within a {dur_min:.1f} minute window.",
+                    f"{len(window_group)} {camp_min_conf.name}-or-higher findings across {len(unique_modules)} "
+                    f"distinct techniques ({mod_list_str}) within a {dur_min:.1f} minute window.",
                     f"Chronology spans from {earliest.strftime('%H:%M:%S UTC')} to {latest.strftime('%H:%M:%S UTC')}.",
+                    "Member findings: " + ", ".join(f.id or f.title for f in window_group) + ".",
                 ]
 
                 campaign_findings.append(Finding(
@@ -185,19 +183,26 @@ def correlate_findings(
                     title=f"Coordinated Anti-Forensics Campaign ({len(unique_modules)} techniques in {dur_min:.0f} mins)",
                     confidence=Confidence.HIGH,
                     score=8,
-                    subject="System-wide incident cover-up",
+                    subject="Possible coordinated cover-up",
                     artifact=f"Correlated across: {mod_list_str}",
                     reasons=camp_reasons,
-                    benign_notes=["Virtually impossible for random background maintenance to cause this convergence."],
+                    benign_notes=[
+                        "This cluster is only as strong as its members. Check each member finding: "
+                        "maintenance (an administrator running a cleaner and clearing logs) can also "
+                        "produce several techniques close together.",
+                        "Each member's time has its own meaning (execution, MFT change, event logged), "
+                        "so the order within the window is approximate.",
+                    ],
                     evidence={
                         "event_count": len(window_group),
-                        "techniques": list(unique_modules),
+                        "techniques": sorted(unique_modules),
+                        "member_ids": [f.id for f in window_group],
                         "start_time": earliest.isoformat(),
                         "end_time": latest.isoformat(),
                         "duration_minutes": round(dur_min, 1),
                     },
                     event_time=earliest,
-                    time_meaning="campaign inception timestamp",
+                    time_meaning="time of the earliest member finding",
                 ))
                 # Skip forward past this window
                 start_idx += len(window_group)

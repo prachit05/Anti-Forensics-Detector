@@ -1,0 +1,162 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ title }}</title>
+<style>
+  :root { --ink:#1d2329; --muted:#5b6670; --line:#d5dbe0; --bg:#ffffff; --panel:#f5f7f9;
+          --high:#b3261e; --medium:#b26a00; --low:#3a6ea5; }
+  body { font: 14px/1.5 -apple-system, "Segoe UI", Roboto, Arial, sans-serif; color: var(--ink);
+         background: var(--bg); margin: 0 auto; max-width: 1000px; padding: 24px 16px 64px; }
+  h1 { font-size: 22px; margin: 0 0 4px; }
+  h2 { font-size: 17px; border-bottom: 2px solid var(--line); padding-bottom: 4px; margin-top: 32px; }
+  h3 { font-size: 15px; margin: 0 0 6px; }
+  table { border-collapse: collapse; width: 100%; margin: 8px 0; table-layout: fixed; }
+  th, td { border: 1px solid var(--line); padding: 4px 8px; text-align: left; vertical-align: top;
+           overflow-wrap: anywhere; }
+  th { background: var(--panel); font-weight: 600; }
+  .muted { color: var(--muted); }
+  .mono { font-family: Consolas, "SF Mono", Menlo, monospace; font-size: 12px; }
+  .badge { display: inline-block; padding: 0 8px; border-radius: 10px; color: #fff; font-size: 12px;
+           font-weight: 600; }
+  .HIGH { background: var(--high); } .MEDIUM { background: var(--medium); } .LOW { background: var(--low); }
+  .finding { border: 1px solid var(--line); border-radius: 6px; padding: 10px 12px; margin: 10px 0;
+             page-break-inside: avoid; }
+  .finding ul { margin: 4px 0 6px 18px; padding: 0; }
+  .notice { background: #fff4e5; border: 1px solid #f0c48a; padding: 8px 12px; border-radius: 6px; }
+  .ok { color: #1e7d32; font-weight: 600; } .bad { color: var(--high); font-weight: 600; }
+  .cards { display: flex; gap: 12px; flex-wrap: wrap; }
+  .card { flex: 1 1 140px; background: var(--panel); border-radius: 6px; padding: 8px 12px; }
+  .card b { font-size: 22px; display: block; }
+  @media print { body { max-width: none; } h2 { page-break-after: avoid; } }
+</style>
+</head>
+<body>
+
+<h1>{{ title }}</h1>
+<div class="muted">Generated {{ generated }} by Anti-Forensics Detector v{{ tool_version }}</div>
+
+<h2>1. Case details</h2>
+<table>
+  <tr><th style="width:28%">Case</th><td>{{ case_name }}</td></tr>
+  <tr><th>Examiner</th><td>{{ examiner }}</td></tr>
+  <tr><th>Input examined</th><td class="mono">{{ source }}</td></tr>
+  <tr><th>Analysis started / finished</th><td>{{ started }} / {{ finished }}</td></tr>
+  <tr><th>Options</th><td class="mono">{{ options | tojson }}</td></tr>
+  <tr><th>Artifacts found</th><td class="mono">{{ artifacts | tojson }}</td></tr>
+</table>
+
+<h2>2. Evidence integrity</h2>
+<p class="muted">Hashes computed when each file was loaded. A re-hash that matches shows the evidence did not change during analysis.</p>
+<table>
+  <tr><th style="width:30%">File</th><th style="width:10%">Size (bytes)</th><th>MD5 / SHA-256</th></tr>
+  {% for e in evidence %}
+  <tr><td class="mono">{{ e.path }}<br><span class="muted">{{ e.source }}</span></td>
+      <td>{{ "{:,}".format(e.size or 0) }}</td>
+      <td class="mono">{{ e.md5 }}<br>{{ e.sha256 }}</td></tr>
+  {% else %}
+  <tr><td colspan="3" class="muted">No evidence records in the custody log.</td></tr>
+  {% endfor %}
+</table>
+{% if verification is not none %}
+<h3>Re-verification before reporting</h3>
+<table>
+  <tr><th>File</th><th style="width:20%">Result</th></tr>
+  {% for v in verification %}
+  <tr><td class="mono">{{ v.path }}</td>
+      <td>{% if v.match %}<span class="ok">SHA-256 matches</span>{% else %}<span class="bad">MISMATCH</span>{% endif %}</td></tr>
+  {% endfor %}
+</table>
+{% else %}
+<p class="muted">Evidence was not re-hashed before this report was generated.</p>
+{% endif %}
+
+<h2>3. Method</h2>
+<table>
+  <tr><th style="width:34%">Module</th><th style="width:12%">Status</th><th style="width:12%">Findings</th><th>Note</th></tr>
+  {% for m in modules %}
+  <tr><td>{{ m.label }}</td><td>{{ m.status }}</td><td>{{ m.findings if m.status == "ran" else "" }}</td><td>{{ m.note }}</td></tr>
+  {% endfor %}
+</table>
+<p class="muted">Confidence states how likely it is that the action happened, not who did it or why.
+Scores add up from weighted indicators; thresholds are in config/settings.yaml.</p>
+
+<h2>4. Summary of results</h2>
+<div class="cards">
+  {% for level, n in counts.items() %}<div class="card"><span class="badge {{ level }}">{{ level }}</span><b>{{ n }}</b></div>{% endfor %}
+</div>
+<ul>{% for line in auto_summary %}<li>{{ line }}</li>{% endfor %}</ul>
+<table>
+  <tr><th>Module</th><th>HIGH</th><th>MEDIUM</th><th>LOW</th></tr>
+  {% for mod, c in module_counts.items() %}
+  <tr><td>{{ mod }}</td><td>{{ c.get("HIGH", 0) }}</td><td>{{ c.get("MEDIUM", 0) }}</td><td>{{ c.get("LOW", 0) }}</td></tr>
+  {% endfor %}
+</table>
+
+<h2>5. Timeline</h2>
+<p class="muted">Findings at {{ min_confidence }} or above, in time order. Events less than 30 minutes apart form one episode.
+"Time meaning" says what each time stands for.</p>
+{% for ep in episodes %}
+<h3>Episode {{ ep.id }}: {{ ep.start }} to {{ ep.end }} ({{ ep.duration }})</h3>
+<table>
+  <tr><th style="width:10%">Time</th><th style="width:10%">ID</th><th style="width:11%">Confidence</th><th style="width:17%">Phase</th><th>Finding</th><th style="width:20%">Time meaning</th></tr>
+  {% for e in ep.entries %}
+  <tr><td class="mono">{{ e.time }}</td><td class="mono">{{ e.id }}</td><td><span class="badge {{ e.confidence }}">{{ e.confidence }}</span></td>
+      <td>{{ e.phase }}</td><td>{{ e.title }}</td><td class="muted">{{ e.time_meaning }}</td></tr>
+  {% endfor %}
+</table>
+<p class="muted">Tool summary: {{ ep.narrative }}</p>
+{% else %}
+<p class="muted">No dated findings at this level.</p>
+{% endfor %}
+{% if undated %}
+<h3>Undated findings</h3>
+<table>
+  <tr><th style="width:10%">ID</th><th style="width:11%">Confidence</th><th>Finding</th><th style="width:30%">Artifact</th></tr>
+  {% for u in undated %}
+  <tr><td class="mono">{{ u.id }}</td><td><span class="badge {{ u.confidence }}">{{ u.confidence }}</span></td><td>{{ u.title }}</td><td class="mono">{{ u.artifact }}</td></tr>
+  {% endfor %}
+</table>
+{% endif %}
+
+<h2>6. Findings</h2>
+<p class="muted">Listing findings at {{ min_confidence }} or above.
+{% if omitted %}{{ omitted }} lower-confidence finding(s) are not listed here; they are in findings.csv / findings.json.{% endif %}</p>
+{% for f in findings %}
+<div class="finding">
+  <h3><span class="badge {{ f.confidence }}">{{ f.confidence }}</span> <span class="mono">{{ f.id }}</span> {{ f.title }}</h3>
+  <div class="muted">{{ f.technique }} &middot; MITRE ATT&amp;CK {{ f.mitre }} &middot; score {{ f.score }}</div>
+  <div><b>Subject:</b> <span class="mono">{{ f.subject }}</span></div>
+  <div><b>Artifact:</b> <span class="mono">{{ f.artifact }}</span></div>
+  <div><b>Time:</b> {{ f.time_text or "not dated" }}{% if f.time_meaning %} <span class="muted">({{ f.time_meaning }})</span>{% endif %}</div>
+  <b>Why it was flagged</b>
+  <ul>{% for r in f.reasons %}<li>{{ r }}</li>{% endfor %}</ul>
+  {% if f.benign_notes %}<b>Innocent explanations considered</b>
+  <ul>{% for n in f.benign_notes %}<li>{{ n }}</li>{% endfor %}</ul>{% endif %}
+  {% if f.evidence_rows %}
+  <table>{% for k, v in f.evidence_rows %}<tr><th style="width:28%">{{ k }}</th><td class="mono">{{ v }}</td></tr>{% endfor %}</table>
+  {% endif %}
+</div>
+{% else %}
+<p class="muted">No findings at this level.</p>
+{% endfor %}
+
+<h2>7. Conclusion (examiner)</h2>
+{% if conclusion_missing %}<p class="notice">{{ conclusion }}</p>
+{% else %}<p style="white-space: pre-wrap">{{ conclusion }}</p>{% endif %}
+
+<h2>8. Limitations of the method</h2>
+<ul>{% for l in limitations %}<li>{{ l }}</li>{% endfor %}</ul>
+
+<h2>Appendix: chain-of-custody log</h2>
+<table>
+  <tr><th style="width:22%">Time (UTC)</th><th style="width:13%">Examiner</th><th style="width:20%">Action</th><th>Details</th></tr>
+  {% for e in custody_log %}
+  <tr><td class="mono">{{ e.time_utc }}</td><td>{{ e.examiner }}</td><td>{{ e.action }}</td>
+      <td class="mono">{% for k, v in e.items() if k not in ("time_utc", "examiner", "action", "host") %}{{ k }}={{ v }} {% endfor %}</td></tr>
+  {% endfor %}
+</table>
+
+</body>
+</html>

@@ -43,7 +43,7 @@ Honest limits
 from __future__ import annotations
 
 from datetime import datetime, timezone
-from pathlib import Path
+from pathlib import PureWindowsPath
 
 import pandas as pd
 
@@ -61,6 +61,11 @@ DEFAULT_CONFIG = {
         "run_mru_command": 4,
         "mft_file_present": 2,
     },
+    # Built-in Windows tools (wevtutil, cipher) ship on every system and are also run by
+    # installers and admin scripts. Their presence under \Windows\ is not reported, and an
+    # execution trace scores this much lower than for a third-party wiper.
+    "builtin_tool_discount": 2,
+    "builtin_system_prefix": "\\windows\\",
     "known_tools": {
         "sdelete": {
             "names": ["sdelete.exe", "sdelete64.exe"],
@@ -103,12 +108,14 @@ DEFAULT_CONFIG = {
             "category": "Log Manipulation",
             "description": "Windows command-line event log utility",
             "mitre": "T1070.001",
+            "builtin": True,
         },
         "cipher": {
             "names": ["cipher.exe"],
             "category": "Disk Wiper",
             "description": "Windows built-in encryption and free-space wiping utility (cipher /w)",
             "mitre": "T1070.004",
+            "builtin": True,
         },
     },
 }
@@ -116,13 +123,21 @@ DEFAULT_CONFIG = {
 
 def _match_tool_name(test_name: str, known_tools: dict) -> tuple[str, dict] | None:
     """Check if an executable name matches known anti-forensic tools."""
-    name_lower = Path(test_name).name.lower()
+    name_lower = PureWindowsPath(test_name).name.lower()
     for tool_id, tool_info in known_tools.items():
         if any(name_lower == target.lower() for target in tool_info.get("names", [])):
             return tool_id, tool_info
         if tool_id in name_lower and any(name_lower.endswith(ext) for ext in (".exe", ".pf")):
             return tool_id, tool_info
     return None
+
+
+def _builtin_note(tool_info: dict, cfg: dict) -> str:
+    """Extra benign note for built-in Windows tools ('' for third-party tools)."""
+    if not tool_info.get("builtin"):
+        return ""
+    return ("Built-in Windows tool: also run by installers, updates and admin scripts, so the score is "
+            f"lowered by {cfg['builtin_tool_discount']}. Check the command line (RunMRU, Event 4688) if available.")
 
 
 def detect_prefetch(prefetch_df: pd.DataFrame, known_tools: dict, weights: dict, cfg: dict) -> list[Finding]:
@@ -145,6 +160,9 @@ def detect_prefetch(prefetch_df: pd.DataFrame, known_tools: dict, weights: dict,
 
         tool_id, tool_info = match
         score = weights["prefetch_executed"]
+        builtin_note = _builtin_note(tool_info, cfg)
+        if builtin_note:
+            score -= cfg["builtin_tool_discount"]
         confidence = confidence_from_score(score, cfg["medium_at"], cfg["high_at"])
 
         run_time = row.get("run_time")
@@ -169,7 +187,7 @@ def detect_prefetch(prefetch_df: pd.DataFrame, known_tools: dict, weights: dict,
             ],
             benign_notes=[
                 "Legitimate administrators occasionally use cipher, wevtutil, or CCleaner for normal maintenance."
-            ],
+            ] + ([builtin_note] if builtin_note else []),
             evidence={
                 "exe_name": exe,
                 "pf_file": str(row.get("pf_file")),
@@ -194,13 +212,16 @@ def detect_registry(registry_data: dict, known_tools: dict, weights: dict, cfg: 
             continue
         tool_id, tool_info = match
         score = weights["userassist_executed"]
+        builtin_note = _builtin_note(tool_info, cfg)
+        if builtin_note:
+            score -= cfg["builtin_tool_discount"]
         confidence = confidence_from_score(score, cfg["medium_at"], cfg["high_at"])
 
         findings.append(Finding(
             module="tool_traces",
             technique=f"UserAssist Execution Trace: {tool_info['category']}",
             mitre=tool_info.get("mitre", "T1070"),
-            title=f"UserAssist execution trace: {Path(ua.path).name} (User: {ua.user or 'Current'})",
+            title=f"UserAssist execution trace: {PureWindowsPath(ua.path).name} (User: {ua.user or 'Current'})",
             confidence=confidence,
             score=score,
             subject=ua.path,
@@ -209,7 +230,8 @@ def detect_registry(registry_data: dict, known_tools: dict, weights: dict, cfg: 
                 f"NTUSER.DAT UserAssist records GUI execution of '{ua.path}'.",
                 f"Recorded run count: {ua.run_count}.",
             ],
-            benign_notes=["User may have launched tool for general cleaning or privacy purposes."],
+            benign_notes=["User may have launched tool for general cleaning or privacy purposes."]
+            + ([builtin_note] if builtin_note else []),
             evidence={
                 "program_path": ua.path,
                 "run_count": ua.run_count,
@@ -321,6 +343,8 @@ def detect_mft(mft: pd.DataFrame, known_tools: dict, weights: dict, cfg: dict) -
             continue
 
         tool_id, tool_info = match
+        if tool_info.get("builtin") and path.startswith(cfg["builtin_system_prefix"]):
+            continue    # the normal Windows copy of a built-in tool: present on every system
         score = weights["mft_file_present"]
         confidence = confidence_from_score(score, cfg["medium_at"], cfg["high_at"])
 

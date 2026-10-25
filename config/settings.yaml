@@ -83,9 +83,11 @@ detection:
     max_chunks_to_sample: 500      # limit scan time on large disks
     uniform_threshold_pct: 98.0    # % of bytes matching single value (0x00, 0xFF)
     high_entropy_threshold: 7.95   # Shannon entropy threshold for pseudorandom wipe
-    min_consecutive_chunks: 3      # contiguous chunks needed to flag an area
+    min_consecutive_chunks: 3      # minimum matching chunks before any finding
+    zero_min_fraction: 0.4         # share of sampled *free* chunks that must be zero-filled
+    random_min_fraction: 0.6       # share that must be random (deleted ZIP/CAB remnants are random too)
     weights:
-      massive_zero_fill: 4
+      massive_zero_fill: 2         # LOW: never-written space (new VM disk, TRIM) is also zeros
       uniform_pattern_fill: 4
       massive_high_entropy: 4
 
@@ -116,6 +118,8 @@ detection:
       registry_installed: 4        # tool listed in SOFTWARE Uninstall keys (MEDIUM)
       run_mru_command: 4           # tool command in RunMRU (MEDIUM)
       mft_file_present: 2          # tool binary or folder found in MFT (LOW)
+    builtin_tool_discount: 2       # built-in tools (builtin: true) score this much lower when executed
+    builtin_system_prefix: '\windows\'   # their copies under this folder are normal and not reported
     known_tools:
       sdelete:
         names: ['sdelete.exe', 'sdelete64.exe']
@@ -141,16 +145,19 @@ detection:
         names: ['wevtutil.exe']
         category: 'Log Manipulation'
         description: 'Windows Event Log utility (often used to clear logs)'
+        builtin: true
       cipher:
         names: ['cipher.exe']
         category: 'Disk Wiper'
         description: 'Windows built-in cipher /w free space wiping command'
+        builtin: true
 
 # ---------------------------------------------------------------- Stage 5 analysis & ML
   analysis:
     correlation_window_minutes: 30.0   # match tool executions to actions within this window
     campaign_window_hours: 2.0         # match multi-vector activities within this window
     min_campaign_techniques: 3         # minimum distinct techniques to declare a campaign
+    campaign_min_confidence: MEDIUM    # LOW findings are mostly ordinary activity; they never form a campaign
     corroboration_score_boost: 2       # score increase when findings corroborate each other
 
   ml:
