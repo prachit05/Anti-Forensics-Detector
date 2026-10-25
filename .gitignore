@@ -1,0 +1,8 @@
+.venv/
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# Evidence and cases live in C:\forensics (outside the repo). Test samples stay local.
+tests/sample_data/*
+!tests/sample_data/.gitkeep

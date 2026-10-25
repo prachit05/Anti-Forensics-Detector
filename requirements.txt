@@ -1,0 +1,28 @@
+# Anti-Forensics Detector - Python 3.12 (64-bit) on Windows
+# Install with:  pip install -r requirements.txt
+
+# --- Disk image access ---
+pytsk3>=20231007          # The Sleuth Kit bindings: read NTFS, list files, read unallocated space
+libewf-python>=20240506   # pyewf: open E01 (Expert Witness) images. Optional if you only use raw/dd
+
+# --- Artifact parsers ---
+python-evtx>=0.7.4        # Windows .evtx event logs (Event IDs 1102, 104, record numbers)
+python-registry>=1.3.1    # Registry hives (NTUSER.DAT UserAssist, SOFTWARE Uninstall keys)
+# $MFT and Prefetch parsers are written by us in afd/parsers (no extra package):
+#   - MFT: we need raw $SI and $FN timestamps with full 100-ns precision
+#   - Prefetch: Win10/11 files are compressed; we call Windows' own ntdll decompressor via ctypes
+
+# --- Analysis ---
+numpy>=1.26
+pandas>=2.2
+scikit-learn>=1.5         # Isolation Forest (optional ML module)
+
+# --- Interface and reports ---
+streamlit>=1.38
+plotly>=5.24              # Interactive timeline chart
+jinja2>=3.1               # HTML report template
+reportlab>=4.2            # PDF report (pure Python, no GTK needed on Windows)
+
+# --- Config and testing ---
+pyyaml>=6.0               # Detection thresholds in config/settings.yaml
+pytest>=8.3

@@ -1,0 +1,10 @@
+# Anti-Forensics Detector settings.
+# Environment variables override these paths:
+#   AFD_EVIDENCE_DIR, AFD_CASES_DIR
+
+paths:
+  # Keep both outside OneDrive-synced folders (Desktop, Documents, Pictures).
+  evidence_dir: 'C:\forensics\evidence'   # images and exported artifacts (read-only input)
+  cases_dir: 'C:\forensics\cases'         # per-case output: custody log, exports, reports
+
+# Detection thresholds are added here in Stage 3 onwards.
