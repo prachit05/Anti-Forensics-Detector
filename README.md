@@ -82,3 +82,36 @@ C:\forensics\evidence\
 - Work on a **copy**. Keep the original and its FTK Imager hash file separately.
 - The tool hashes evidence on load (MD5 and SHA-256) and logs every action to
   `<cases_dir>\<case>\custody_log.jsonl`.
+
+## Stage 3: detectors (timestomping and log wiping)
+
+Run on an image or a folder of exported artifacts:
+
+```powershell
+python run_detectors.py C:\forensics\cases\stage2_test_clean_v2\extracted clean_check
+python run_detectors.py <image or folder> my_case --min-confidence MEDIUM
+python run_detectors.py <image or folder> my_case --reference-time 2026-10-25T09:30:00Z
+```
+
+It prints the findings, writes `<cases_dir>\<case>\findings.json` and logs each step to the
+custody log. Run the tests with `python -m pytest`.
+
+| Detector | File | Looks for |
+|---|---|---|
+| Timestomping (T1070.006) | `afd/detectors/timestomp.py` | `$SI` created earlier than `$FN` created, whole-second `$SI` dates, edit trace in `$SI` "MFT changed", dates copied from a system file, future or zeroed dates |
+| Log wiping (T1070.001) | `afd/detectors/log_wiping.py` | Events 1102 / 104, missing record IDs, unexplained silence, header expecting more records, log history missing |
+
+**Confidence** means how sure we are the *action* happened, not who did it or why.
+Each finding lists its reasons and the innocent explanations that were considered.
+Scores and thresholds are in `config/settings.yaml` under `detection:`.
+
+**False positives that are handled on purpose**
+- Installers and archive extraction (many files, whole-second original dates, same folder,
+  arriving within seconds, often under Program Files) are downgraded to LOW with a note.
+- Gaps in a log are not reported when a restart, sleep or clock-change event from the System
+  log sits next to them. Supply `System.evtx` along with the log you care about.
+- A header that is *behind* the records (dirty file) is not a finding; one that is *ahead* is.
+
+**Known limits:** a careful attacker can also edit `$FN` (for example by moving the file) or
+stomp forward; a copy that keeps every date looks like `si_before_fn` and stays LOW unless
+other indicators join it; log editing that leaves record IDs contiguous is not detectable here.

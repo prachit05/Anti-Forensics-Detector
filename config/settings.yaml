@@ -8,3 +8,54 @@ paths:
   cases_dir: 'C:\forensics\cases'         # per-case output: custody log, exports, reports
 
 # Detection thresholds are added here in Stage 3 onwards.
+
+# ---------------------------------------------------------------- Stage 3 detectors
+# Every value below is the built-in default; delete a line to fall back to it.
+# Scores add up; the totals are mapped to LOW / MEDIUM / HIGH with medium_at / high_at.
+detection:
+  timestomp:
+    tolerance_seconds: 2.0              # $SI vs $FN differences below this are ignored
+    mft_change_tolerance_seconds: 60.0  # $SI "MFT changed" this much after $FN created = edited later
+    future_margin_days: 1.0             # $SI dates further than this past the newest $FN date are impossible
+    first_user_entry: 24                # MFT entries 0-23 are NTFS system files; skipped
+    medium_at: 4
+    high_at: 6
+    weights:
+      si_before_fn: 3          # core: $SI created is earlier than $FN created
+      si_zeroed: 3             # core: $SI created and modified are zero
+      future: 4                # core: $SI date is in the future
+      zero_subsecond: 2        # $SI whole seconds but $FN has fractions
+      changed_after_arrival: 1 # $SI "MFT changed" long after arrival, write time before arrival
+      donor_match: 2           # $SI dates identical to a Windows system file
+      suspicious_path: 1       # file is in a temp / public / recycle-bin style folder
+      bulk_pattern: -3         # many similar files arrived together (installer / archive)
+      benign_path: -1          # file is under Program Files, WinSxS and similar
+    bulk_min_files: 8          # this many flagged files in one folder ...
+    bulk_window_seconds: 120   # ... that arrived within this many seconds = bulk pattern
+    benign_path_prefixes:
+      - '\program files\'
+      - '\program files (x86)\'
+      - '\windows\winsxs\'
+      - '\windows\servicing\'
+      - '\windows\installer\'
+      - '\windows\softwaredistribution\'
+      - '\windows\system32\driverstore\'
+      - '\programdata\package cache\'
+      - '\programdata\microsoft\'
+    suspicious_path_fragments:
+      - '\windows\temp\'
+      - '\users\public\'
+      - '\appdata\local\temp\'
+      - '\$recycle.bin\'
+    donor_path_prefixes:
+      - '\windows\system32\'
+      - '\windows\syswow64\'
+      - '\windows\winsxs\'
+
+  log_wiping:
+    time_gap_hours: 6.0          # silence longer than this in a busy log is reported
+    sparse_gap_factor: 50        # ... and must exceed this many times the log's median spacing
+    anchor_window_minutes: 5.0   # a restart / sleep / clock change this close explains a gap
+    min_missing_records: 1       # record-ID gaps smaller than this are ignored
+    late_start_days: 1.0         # log starts this much later than the System log = history missing
+    peer_log: 'System.evtx'      # the log used as the "when did this machine start" reference

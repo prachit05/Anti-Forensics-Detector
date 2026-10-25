@@ -55,3 +55,22 @@ def onedrive_warnings(paths: dict) -> list[str]:
         for name, p in paths.items()
         if any(h in str(p).lower() for h in _ONEDRIVE_HINTS)
     ]
+
+
+def detector_settings(name: str) -> dict:
+    """Return the `detection: <name>:` section of settings.yaml ({} if absent)."""
+    return (load_settings().get("detection") or {}).get(name) or {}
+
+
+def merge_config(defaults: dict, *overrides: dict) -> dict:
+    """Merge override dicts onto defaults. Nested dicts merge key by key; lists and
+    scalars in an override replace the default completely."""
+    out = {k: (dict(v) if isinstance(v, dict) else list(v) if isinstance(v, list) else v)
+           for k, v in defaults.items()}
+    for override in overrides:
+        for key, value in (override or {}).items():
+            if isinstance(value, dict) and isinstance(out.get(key), dict):
+                out[key] = merge_config(out[key], value)
+            else:
+                out[key] = value
+    return out
