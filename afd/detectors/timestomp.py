@@ -34,6 +34,11 @@ cannot have been *created* before it arrived, so:
                    other. Installers and archive extraction write original (often
                    whole-second) dates onto many files and look exactly like this.
     benign_path    the file is under Program Files, WinSxS and similar.
+    volume_burst   many flagged files *anywhere* arrived within a few minutes and none
+                   show an "edited after arrival" trace (Windows setup, updates).
+
+  Folders are skipped by default (include_directories): their "MFT changed" time moves
+  whenever a file is added, so they look edited all the time.
 
 Honest limits
 -------------
@@ -69,6 +74,9 @@ DEFAULT_CONFIG = {
     },
     "bulk_min_files": 8,
     "bulk_window_seconds": 120,
+    "volume_burst_min_files": 50,
+    "volume_burst_window_seconds": 300,
+    "include_directories": False,
     "benign_path_prefixes": [
         "\\program files\\", "\\program files (x86)\\", "\\windows\\winsxs\\",
         "\\windows\\servicing\\", "\\windows\\installer\\",
@@ -130,6 +138,17 @@ def _bulk_flags(parent: pd.Series, arrival: pd.Series, window_s: float, min_file
     return flags
 
 
+def _burst_flags(arrival: pd.Series, window_s: float, min_files: int) -> np.ndarray:
+    """True for rows where >= min_files flagged files *anywhere on the volume* arrived
+    within +-window_s. Windows setup and installers spread thousands of files over many
+    folders in a few minutes, which the per-folder check above cannot see."""
+    t = arrival.to_numpy()
+    ordered = np.sort(t)
+    win = int(window_s * T)
+    count = np.searchsorted(ordered, t + win, "right") - np.searchsorted(ordered, t - win, "left")
+    return count >= min_files
+
+
 def _find_donors(mft: pd.DataFrame, si_c: pd.Series, si_m: pd.Series,
                  work: pd.DataFrame, prefixes: list[str]) -> dict[int, tuple[int, str]]:
     """For each candidate outside the system folders, find a *different* system file
@@ -174,6 +193,10 @@ def detect(mft: pd.DataFrame, cfg: dict | None = None,
     fn_c, fn_mc = fn["created"], fn["mft_modified"]
 
     user = mft["entry"] >= cfg["first_user_entry"]
+    if not cfg["include_directories"]:
+        # A folder's $SI "MFT changed" moves every time a file is added to it, and setup
+        # stamps folders with image build dates, so folders are almost all false positives.
+        user &= ~mft["is_dir"].astype(bool)
     has_fn = fn_c > 0
 
     # ----- core indicators
@@ -209,6 +232,13 @@ def detect(mft: pd.DataFrame, cfg: dict | None = None,
     work["changed_after"] = changed_after[candidates].to_numpy()
     work["bulk"] = _bulk_flags(work["parent_entry"], work["fn_c"],
                                cfg["bulk_window_seconds"], cfg["bulk_min_files"])
+    # Installers write dates as they create files, so they leave no "edited after arrival"
+    # trace. A burst that does carry that trace is not explained by installation.
+    # Exception: on a deleted record the trace is unreliable, because removing a hard link
+    # (Windows servicing links WinSxS and System32), renaming or deleting also moves it.
+    edit_trace = work["changed_after"] & ~work["deleted"]
+    work["burst"] = _burst_flags(work["fn_c"], cfg["volume_burst_window_seconds"],
+                                 cfg["volume_burst_min_files"]) & ~edit_trace
     donors = _find_donors(mft, si_c, si_m, work, cfg["donor_path_prefixes"])
 
     benign_prefixes = tuple(p.lower() for p in cfg["benign_path_prefixes"])
@@ -274,6 +304,14 @@ def detect(mft: pd.DataFrame, cfg: dict | None = None,
                 f"At least {cfg['bulk_min_files']} similar files in the same folder arrived within "
                 f"{cfg['bulk_window_seconds']} seconds of each other. This is typical of an "
                 f"installer or archive extraction, so the score was lowered.")
+        elif r.burst:
+            score += w["bulk_pattern"]
+            indicators.append("volume_burst")
+            benign.append(
+                f"At least {cfg['volume_burst_min_files']} similar files across the volume arrived "
+                f"within {cfg['volume_burst_window_seconds']} seconds of each other, with no sign "
+                f"of their dates being edited later. This is typical of Windows setup, updates or "
+                f"a software install, so the score was lowered.")
         if path_l.startswith(benign_prefixes):
             score += w["benign_path"]
             indicators.append("trusted_location")

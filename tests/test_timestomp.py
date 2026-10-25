@@ -168,3 +168,67 @@ def test_findings_serialise_to_json(tmp_path):
     findings = run(tmp_path, [folder(DIR, "Docs"), stomped_file(50, "x.exe", DIR)])
     out = json.dumps([f.to_dict() for f in findings])
     assert '"confidence"' in out and findings[0].id == "TS-0001"
+
+
+def setup_burst(n_folders=20, per_folder=3):
+    """Windows-setup-style arrival: files spread over many small folders within minutes,
+    carrying old image dates (with sub-seconds) and no later edit."""
+    entries = [folder(DIR, "Windows")]
+    old = ft(datetime(2025, 3, 1, 8, 0, 0, tzinfo=timezone.utc), 1234567)
+    n = 60
+    for d in range(n_folders):
+        entries.append(folder(100 + d, f"comp{d}", parent=DIR))
+        for k in range(per_folder):
+            arrive = ft(when(hours=2, seconds=d * 5 + k), 2000000 + k)
+            entries.append(dict(entry=n, name=f"f{k}.dll", parent=100 + d,
+                                si=(old, old, arrive, old), fn=(arrive, arrive, arrive, arrive)))
+            n += 1
+    return entries
+
+
+def test_folders_are_skipped_by_default(tmp_path):
+    old = ft(OLD, 1234567)
+    arrive = ft(when(hours=2), 3141592)
+    later = ft(when(hours=5), 2718281)
+    stomped_dir = dict(entry=50, name="Themes", parent=DIR, is_dir=True,
+                       si=(old, old, later, old), fn=(arrive, arrive, arrive, arrive))
+    entries = [folder(DIR, "Windows"), stomped_dir]
+    assert run(tmp_path, entries) == []
+    flagged = run(tmp_path, entries, cfg={"include_directories": True})
+    assert len(flagged) == 1 and flagged[0].evidence["is_directory"] is True
+
+
+def test_setup_burst_across_many_folders_is_low(tmp_path):
+    """Per-folder bulk (8 files) never fires here; the volume-wide burst must."""
+    findings = run(tmp_path, setup_burst())
+    assert len(findings) == 60
+    assert all(f.confidence == Confidence.LOW for f in findings)
+    assert all("volume_burst" in f.evidence["indicators"] for f in findings)
+    assert "Windows setup" in " ".join(findings[0].benign_notes)
+
+
+def test_burst_with_edit_trace_is_not_downgraded(tmp_path):
+    """A dropped toolkit stomped afterwards arrives in a burst too, but its $SI
+    'MFT changed' shows the later edit, so the burst rule must not hide it."""
+    entries = setup_burst()
+    for e in entries:
+        if not e.get("is_dir"):
+            c, m, _, a = e["si"]
+            e["si"] = (c, m, ft(when(hours=4), 9999999), a)
+    findings = run(tmp_path, entries)
+    assert findings and not any("volume_burst" in f.evidence["indicators"] for f in findings)
+    assert all(f.confidence >= Confidence.MEDIUM for f in findings)
+
+
+def test_deleted_update_burst_is_low_despite_change_time(tmp_path):
+    """Windows Update cleanup: deleted hard-linked files whose 'MFT changed' moved when
+    the link was removed. On deleted records that trace must not block the burst rule."""
+    entries = setup_burst()
+    for e in entries:
+        if not e.get("is_dir"):
+            c, m, _, a = e["si"]
+            e["si"] = (c, m, ft(when(hours=4), 9999999), a)
+            e["in_use"] = False
+    findings = run(tmp_path, entries)
+    assert len(findings) == 60
+    assert all(f.confidence == Confidence.LOW for f in findings)

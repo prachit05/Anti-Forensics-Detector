@@ -89,12 +89,13 @@ Run on an image or a folder of exported artifacts:
 
 ```powershell
 python run_detectors.py C:\forensics\cases\stage2_test_clean_v2\extracted clean_check
-python run_detectors.py <image or folder> my_case --min-confidence MEDIUM
+python run_detectors.py <image or folder> my_case --min-confidence LOW --limit 0
 python run_detectors.py <image or folder> my_case --reference-time 2026-10-25T09:30:00Z
 ```
 
-It prints the findings, writes `<cases_dir>\<case>\findings.json` and logs each step to the
-custody log. Run the tests with `python -m pytest`.
+It prints a count per confidence level and up to 50 MEDIUM/HIGH findings (change with
+`--min-confidence` and `--limit`), writes *every* finding to `<cases_dir>\<case>\findings.json`
+and logs each step to the custody log. Run the tests with `python -m pytest`.
 
 | Detector | File | Looks for |
 |---|---|---|
@@ -108,6 +109,9 @@ Scores and thresholds are in `config/settings.yaml` under `detection:`.
 **False positives that are handled on purpose**
 - Installers and archive extraction (many files, whole-second original dates, same folder,
   arriving within seconds, often under Program Files) are downgraded to LOW with a note.
+- Windows setup and updates (thousands of files across many folders arriving within minutes,
+  with no "edited after arrival" trace) are downgraded the same way.
+- Folders are skipped: their "MFT changed" time moves whenever a file is added to them.
 - Gaps in a log are not reported when a restart, sleep or clock-change event from the System
   log sits next to them. Supply `System.evtx` along with the log you care about.
 - A header that is *behind* the records (dirty file) is not a finding; one that is *ahead* is.

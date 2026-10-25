@@ -7,7 +7,10 @@ Options:
     --all-logs               parse every .evtx found (default: Security, System, Application)
     --reference-time ISO     when the image was acquired, e.g. 2026-10-25T09:30:00Z
                              (used for the "date in the future" check)
-    --min-confidence LEVEL   LOW (default), MEDIUM or HIGH: hide weaker findings
+    --min-confidence LEVEL   LOW, MEDIUM (default) or HIGH: hide weaker findings on screen
+    --limit N                show at most N findings on screen (default 50; 0 = all)
+
+findings.json always holds every finding, whatever is shown on screen.
 
 Example:
     python run_detectors.py C:\\forensics\\cases\\stage2_test_clean_v2\\extracted clean_check
@@ -31,7 +34,7 @@ MAIN_LOGS = ("security.evtx", "system.evtx", "application.evtx")
 
 def parse_args(argv: list[str]) -> dict:
     opts = {"source": None, "case": None, "all_logs": False, "reference": None,
-            "min_conf": Confidence.LOW}
+            "min_conf": Confidence.MEDIUM, "limit": 50}
     positional, i = [], 1
     while i < len(argv):
         arg = argv[i]
@@ -43,6 +46,9 @@ def parse_args(argv: list[str]) -> dict:
         elif arg == "--min-confidence":
             i += 1
             opts["min_conf"] = Confidence[argv[i].upper()]
+        elif arg == "--limit":
+            i += 1
+            opts["limit"] = int(argv[i])
         else:
             positional.append(arg)
         i += 1
@@ -116,9 +122,13 @@ def main() -> int:
         print("  no event logs found, skipped")
 
     findings = assign_ids(sort_findings(findings))
-    shown = [f for f in findings if f.confidence >= opts["min_conf"]]
-    print(f"\nFindings (showing {len(shown)} of {len(findings)}, "
-          f"minimum confidence {opts['min_conf'].name}):")
+    counts = {c.name: sum(f.confidence == c for f in findings) for c in reversed(Confidence)}
+    print(f"\nFindings: {len(findings)} total ("
+          + ", ".join(f"{n} {name}" for name, n in counts.items()) + ")")
+    eligible = [f for f in findings if f.confidence >= opts["min_conf"]]
+    shown = eligible[:opts["limit"]] if opts["limit"] else eligible
+    print(f"Showing {len(shown)} of {len(eligible)} at {opts['min_conf'].name} or above "
+          f"(--min-confidence / --limit change this):")
     print_findings(shown)
 
     out = case.dir / "findings.json"

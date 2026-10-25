@@ -32,6 +32,9 @@ detection:
       benign_path: -1          # file is under Program Files, WinSxS and similar
     bulk_min_files: 8          # this many flagged files in one folder ...
     bulk_window_seconds: 120   # ... that arrived within this many seconds = bulk pattern
+    volume_burst_min_files: 50       # this many flagged files anywhere on the volume ...
+    volume_burst_window_seconds: 300 # ... arriving within this window = setup / update burst
+    include_directories: false       # folders' "MFT changed" moves on every new file: skip them
     benign_path_prefixes:
       - '\program files\'
       - '\program files (x86)\'
