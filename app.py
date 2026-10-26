@@ -190,6 +190,15 @@ with tab_over:
                           legend_title_text="", yaxis_title="")
         fig.update_xaxes(tickformat="d", rangemode="tozero")
         st.plotly_chart(fig, use_container_width=True)
+    elif not any(m["status"] == "ran" and m["key"] != "ml_anomaly" for m in result.modules):
+        # "0 findings" from analysing nothing must not look like a clean result
+        msg = ("**Nothing was analysed:** every detector was skipped because the input contained "
+               "no recognised artifacts (see *Modules* below).")
+        if result.artifacts.get("unknown"):
+            msg += (" If you gave a folder that contains a disk image, enter the image file's full "
+                    "path instead (e.g. `...\\images\\clean_baseline.vhd`): images inside a folder "
+                    "are not opened.")
+        st.warning(msg)
     else:
         st.success("No findings. (This does not prove nothing happened; check which modules ran.)")
 

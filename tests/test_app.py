@@ -54,3 +54,20 @@ def test_dashboard_reopens_saved_case(env):
     next(b for b in at2.button if b.label == "Re-verify evidence hashes").click().run()
     assert not at2.exception
     assert any("still match" in s.value for s in at2.success)
+
+
+def test_nothing_analysed_is_a_warning_not_a_clean_result(tmp_path, monkeypatch):
+    """A folder holding only a disk image: every detector is skipped. That must not show
+    the green 'No findings' box (seen when the evidence folder itself was given as input)."""
+    monkeypatch.setenv("AFD_CASES_DIR", str(tmp_path / "cases"))
+    monkeypatch.setenv("AFD_EVIDENCE_DIR", str(tmp_path / "evidence"))
+    folder = tmp_path / "evidence" / "images"
+    folder.mkdir(parents=True)
+    (folder / "disk.vhd").write_bytes(b"\x00" * 4096)
+    at = AppTest.from_file(APP, default_timeout=60).run()
+    at.sidebar.text_input[1].set_value(str(folder.parent))
+    at.sidebar.text_input[2].set_value("empty_case")
+    at.sidebar.button[0].click().run()
+    assert not at.exception
+    assert any("Nothing was analysed" in w.value for w in at.warning)
+    assert not any("No findings" in s.value for s in at.success)
