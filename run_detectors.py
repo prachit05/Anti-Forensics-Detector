@@ -254,8 +254,9 @@ def main() -> int:
         print("  no multi-vector campaign threshold reached; individual findings correlated")
 
     # Stage 5: Unified Timeline Construction
-    timeline = build_timeline(findings)
-    print(f"\n[Stage 5 Timeline] Constructed unified chronological timeline:")
+    timeline = build_timeline(findings, min_confidence=opts["min_conf"])
+    print(f"\n[Stage 5 Timeline] Constructed unified chronological timeline "
+          f"({opts['min_conf'].name} and above):")
     print(f"  dated events: {len(timeline.entries)} | episodes: {len(timeline.episodes)} | undated: {len(timeline.undated_findings)}")
 
     if opts["show_timeline"]:

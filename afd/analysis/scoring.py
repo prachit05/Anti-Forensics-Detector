@@ -24,6 +24,15 @@ the probability of an innocent explanation drops exponentially:
    - When 3 or more distinct anti-forensic techniques occur in close succession
      (e.g. Timestomping + Log Clearing + File Wiping within 2 hours), this represents
      a deliberate, multi-stage cover-up operation.
+   - Only MEDIUM or HIGH findings from the rule-based detectors count. LOW findings are,
+     by definition, patterns an innocent explanation fits (Windows setup and updates
+     produce thousands of them in an hour), and ML outliers only support other evidence.
+
+3. Undated free-space wiping is linked to any recorded run of a free-space wiper,
+   because a wiped region has no timestamp of its own.
+
+A pair is only linked when at least one side is MEDIUM or above: two weak signals that
+happen to be close in time do not make a strong one.
 
 Honest limits
 -------------
@@ -47,6 +56,15 @@ DEFAULT_CONFIG = {
     "min_campaign_techniques": 3,
     "corroboration_score_boost": 2,
 }
+
+# Detectors whose findings can make up a campaign (ML and the campaigns themselves cannot)
+RULE_MODULES = {"timestomp", "log_wiping", "file_wiping", "freespace", "hidden_files", "tool_traces"}
+
+# Indicators meaning "explained by an installer / setup burst": never boosted by a tool nearby
+_BULK_INDICATORS = {"bulk_pattern", "volume_burst"}
+
+# Tools that wipe free space (matched against the tool finding's subject)
+_FREESPACE_WIPERS = ("sdelete", "cipher", "ccleaner", "eraser", "bleachbit")
 
 
 def _get_time(f: Finding) -> datetime | None:
@@ -98,6 +116,10 @@ def correlate_findings(
             pair_key = (tool_f.id, act_f.id)
             if pair_key in corroborated_pairs:
                 continue
+            if max(tool_f.confidence, act_f.confidence) < Confidence.MEDIUM:
+                continue
+            if _BULK_INDICATORS & set(act_f.evidence.get("indicators", [])):
+                continue
 
             # Assess causal links
             is_match = False
@@ -137,14 +159,32 @@ def correlate_findings(
                 elif act_f.confidence == Confidence.MEDIUM and act_f.score >= 5:
                     act_f.confidence = Confidence.HIGH
 
-                # Also annotate the tool finding
+                # Also annotate the tool finding; a built-in tool (LOW on its own) that
+                # lines up with the matching action is now worth attention
                 tool_f.reasons.append(
                     f"Corroborated: Evidence of resulting {act_f.technique} activity was detected at {act_f.event_time}."
                 )
+                if tool_f.confidence == Confidence.LOW:
+                    tool_f.confidence = Confidence.MEDIUM
+                    tool_f.score += boost
+
+    # Free-space wiping has no time of its own: link it to any recorded wiper run
+    wiper_runs = [f for f in tool_findings
+                  if any(w in f.subject.lower() for w in _FREESPACE_WIPERS)
+                  and "execut" in (f.technique + f.title).lower()]
+    for fs_f in (f for f in findings if f.module == "freespace"):
+        if not wiper_runs:
+            break
+        names = ", ".join(sorted({w.subject for w in wiper_runs}))
+        fs_f.score += boost
+        fs_f.reasons.append(f"Corroborated: a free-space wiping tool was run on this system ({names}).")
+        if fs_f.confidence == Confidence.LOW:
+            fs_f.confidence = Confidence.MEDIUM
 
     # Detect Coordinated Anti-Forensics Campaigns
     campaign_findings: list[Finding] = []
-    dated_findings = [f for f in findings if f.event_time is not None]
+    dated_findings = [f for f in findings if f.event_time is not None
+                      and f.module in RULE_MODULES and f.confidence >= Confidence.MEDIUM]
     dated_findings.sort(key=lambda f: _get_time(f) or datetime.min.replace(tzinfo=timezone.utc))
 
     if len(dated_findings) >= min_techniques:
@@ -188,7 +228,9 @@ def correlate_findings(
                     subject="System-wide incident cover-up",
                     artifact=f"Correlated across: {mod_list_str}",
                     reasons=camp_reasons,
-                    benign_notes=["Virtually impossible for random background maintenance to cause this convergence."],
+                    benign_notes=["Only MEDIUM/HIGH findings were counted, so routine setup and update "
+                                  "activity is unlikely to explain this. An administrator performing "
+                                  "several clean-up tasks in one session would still look similar."],
                     evidence={
                         "event_count": len(window_group),
                         "techniques": list(unique_modules),

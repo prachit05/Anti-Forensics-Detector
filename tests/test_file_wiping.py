@@ -75,11 +75,36 @@ def test_sdelete_single_letter_mangled_variant(tmp_path):
 
 
 def test_resident_zero_fill_detected(tmp_path):
+    """Zeros alone are reported but stay LOW: the clean Windows 11 image had 341 genuinely
+    zero-filled deleted servicing files of <= 64 bytes."""
     entries = [zero_filled_deleted(50, "wiped_file.txt")]
     findings = run(tmp_path, entries)
     assert len(findings) == 1
-    assert findings[0].confidence in (Confidence.MEDIUM, Confidence.HIGH)
+    assert findings[0].confidence == Confidence.LOW
     assert "0x00_zero_fill" in findings[0].evidence.get("resident_pattern", "")
+    assert any("zero-filled" in n for n in findings[0].benign_notes)
+
+
+def test_zero_fill_with_wiper_name_is_high(tmp_path):
+    t = ft(when())
+    entries = [dict(entry=50, name="ZZZZZZZZ.ZZZ", parent=DIR, in_use=False, is_dir=False,
+                    si=(t, t, t, t), fn=(t, t, t, t), data=bytes(64))]
+    findings = run(tmp_path, entries)
+    assert len(findings) == 1 and findings[0].confidence == Confidence.HIGH
+
+
+def test_ff_fill_alone_is_medium(tmp_path):
+    findings = run(tmp_path, [pattern_filled_deleted(50, "wiped_secrets.doc", byte_val=0xFF)])
+    assert findings[0].confidence == Confidence.MEDIUM
+
+
+def test_pattern_on_partial_content_counts_less(tmp_path):
+    """Only the first 64 bytes of a 200-byte resident file are known."""
+    t = ft(when())
+    entries = [dict(entry=50, name="notes.doc", parent=DIR, in_use=False, is_dir=False,
+                    si=(t, t, t, t), fn=(t, t, t, t), data=b"\xff" * 200)]
+    f = run(tmp_path, entries)[0]
+    assert f.confidence == Confidence.LOW and f.evidence["pattern_covers_bytes"] == 64
 
 
 def test_resident_ff_fill_detected(tmp_path):

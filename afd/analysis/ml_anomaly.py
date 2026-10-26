@@ -31,8 +31,10 @@ Honest limits
 -------------
 - Unsupervised ML flags statistical outliers, not guilt or malice. A sudden burst of events
   might simply be Windows applying an automatic update or an administrator exporting logs.
-- Findings are reported as MEDIUM or LOW confidence and explicitly documented as ML anomalies
-  to be cross-checked against deterministic rules and the timeline.
+- Findings are always reported as LOW: supporting evidence to be cross-checked against the
+  rule-based detectors and the timeline. On a clean Windows 11 image the model flagged 224
+  Windows servicing files and setup-time log intervals at what used to be MEDIUM, so an
+  outlier on its own is not trusted. ML findings also never count towards a campaign.
 """
 from __future__ import annotations
 
@@ -137,8 +139,8 @@ def detect_log_anomalies(
                 technique="Unsupervised Anomaly Detection (Isolation Forest)",
                 mitre="T1070.001",
                 title=f"Statistical anomaly in event log: {log_name} (Event #{row['record_id']})",
-                confidence=Confidence.MEDIUM if dt_sec >= 7200 or id_step > 5 else Confidence.LOW,
-                score=4 if dt_sec >= 7200 else 2,
+                confidence=Confidence.LOW,
+                score=3 if dt_sec >= 7200 or id_step > 5 else 2,
                 subject=f"{log_name} Record #{row['record_id']}",
                 artifact=f"{log_name}",
                 reasons=reasons,
@@ -241,8 +243,8 @@ def detect_mft_anomalies(
             technique="Unsupervised Anomaly Detection (Isolation Forest)",
             mitre="T1070.006",
             title=f"Statistical timestamp anomaly: {row['name']} (MFT #{row['entry']})",
-            confidence=Confidence.MEDIUM if d_c > 86400 else Confidence.LOW,
-            score=4 if d_c > 86400 else 2,
+            confidence=Confidence.LOW,
+            score=3 if d_c > 86400 else 2,
             subject=str(row["path"]) or f"MFT entry {row['entry']}",
             artifact=f"$MFT entry {row['entry']}",
             reasons=reasons,

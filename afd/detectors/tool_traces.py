@@ -31,6 +31,14 @@ Known tool signatures detected:
   - Wevtutil (command-line Windows event log clearing)
   - Cipher (built-in disk free-space wiping pass)
 
+Built-in Windows tools (wevtutil, cipher)
+-----------------------------------------
+Windows itself runs wevtutil during setup and updates (to register event-log manifests),
+and both tools ship in System32 and WinSxS on every install. So running one is reported
+as LOW on its own, and copies under \\Windows\\ are not reported at all. A run becomes
+MEDIUM when the Stage 5 correlation finds the matching action (a log clear, a wipe)
+nearby. A command typed by a user in the Run dialog is still reported in full.
+
 Honest limits
 -------------
 - Tools like CCleaner or BleachBit are widely used for legitimate system maintenance.
@@ -60,7 +68,10 @@ DEFAULT_CONFIG = {
         "registry_installed": 4,
         "run_mru_command": 4,
         "mft_file_present": 2,
+        "builtin_tool_executed": 2,
     },
+    # Copies of built-in tools in these folders are part of Windows, not evidence
+    "builtin_system_paths": ["\\windows\\", "$orphanfiles\\"],
     "known_tools": {
         "sdelete": {
             "names": ["sdelete.exe", "sdelete64.exe"],
@@ -103,12 +114,14 @@ DEFAULT_CONFIG = {
             "category": "Log Manipulation",
             "description": "Windows command-line event log utility",
             "mitre": "T1070.001",
+            "builtin": True,
         },
         "cipher": {
             "names": ["cipher.exe"],
             "category": "Disk Wiper",
             "description": "Windows built-in encryption and free-space wiping utility (cipher /w)",
             "mitre": "T1070.004",
+            "builtin": True,
         },
     },
 }
@@ -144,8 +157,16 @@ def detect_prefetch(prefetch_df: pd.DataFrame, known_tools: dict, weights: dict,
             continue
 
         tool_id, tool_info = match
-        score = weights["prefetch_executed"]
+        builtin = bool(tool_info.get("builtin"))
+        score = weights["builtin_tool_executed"] if builtin else weights["prefetch_executed"]
         confidence = confidence_from_score(score, cfg["medium_at"], cfg["high_at"])
+        if builtin:
+            benign = [f"{exe} is part of Windows, and Windows runs it itself during setup and "
+                      f"updates. Running it is not evidence on its own; it matters only if the "
+                      f"matching action (a log clear or a wipe) is found near the same time."]
+        else:
+            benign = ["Legitimate users and administrators also run cleaning tools for routine "
+                      "maintenance; execution shows capability, not intent."]
 
         run_time = row.get("run_time")
         run_dt = run_time.to_pydatetime() if hasattr(run_time, "to_pydatetime") else (
@@ -167,10 +188,9 @@ def detect_prefetch(prefetch_df: pd.DataFrame, known_tools: dict, weights: dict,
                 f"Prefetch file '{row.get('pf_file')}' confirms execution of {exe}.",
                 f"Recorded total run count: {row.get('run_count')}.",
             ],
-            benign_notes=[
-                "Legitimate administrators occasionally use cipher, wevtutil, or CCleaner for normal maintenance."
-            ],
+            benign_notes=benign,
             evidence={
+                "builtin_windows_tool": builtin,
                 "exe_name": exe,
                 "pf_file": str(row.get("pf_file")),
                 "run_count": int(row.get("run_count", 0)),
@@ -305,7 +325,9 @@ def detect_mft(mft: pd.DataFrame, known_tools: dict, weights: dict, cfg: dict) -
     if mft.empty:
         return findings
 
-    df = mft[mft["entry"] >= 24]
+    system_paths = tuple(p.lower() for p in cfg.get("builtin_system_paths", []))
+    all_names = {n.lower() for info in known_tools.values() for n in info.get("names", [])}
+    df = mft[(mft["entry"] >= 24) & mft["name"].fillna("").str.lower().isin(all_names)]
     for _, row in df.iterrows():
         name = str(row.get("name", "")).lower()
         path = str(row.get("path", "")).lower()
@@ -321,6 +343,9 @@ def detect_mft(mft: pd.DataFrame, known_tools: dict, weights: dict, cfg: dict) -
             continue
 
         tool_id, tool_info = match
+        if tool_info.get("builtin") and (path + "\\").lstrip("\\").startswith(
+                tuple(p.lstrip("\\") for p in system_paths)):
+            continue                      # Windows' own copy (System32, WinSxS, update cache)
         score = weights["mft_file_present"]
         confidence = confidence_from_score(score, cfg["medium_at"], cfg["high_at"])
 

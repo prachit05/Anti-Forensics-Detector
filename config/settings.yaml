@@ -69,11 +69,12 @@ detection:
     high_at: 6
     weights:
       sdelete_mangled_name: 5      # 26-char repeating sequence (e.g. AAAAAAA.AAA)
-      resident_zero_fill: 4        # deleted resident content is all 0x00
+      resident_zero_fill: 2        # deleted resident content is all 0x00 (LOW alone: Windows leaves many)
       resident_uniform_byte: 4     # deleted resident content is repeating pattern (0xFF, etc)
       random_mangled_name: 3       # deleted entry has high-entropy random name
       zero_size_deleted: 1         # deleted file truncated to 0 size
       benign_temp_name: -2         # temp files often have GUID or random-like names
+      partial_content: -1          # pattern seen only in the first 64 bytes of a longer file
     min_resident_check_bytes: 8    # don't test uniform pattern on fewer bytes than this
 
   freespace:
@@ -85,9 +86,9 @@ detection:
     high_entropy_threshold: 7.95   # Shannon entropy threshold for pseudorandom wipe
     min_consecutive_chunks: 3      # contiguous chunks needed to flag an area
     weights:
-      massive_zero_fill: 4
-      uniform_pattern_fill: 4
-      massive_high_entropy: 4
+      massive_zero_fill: 2         # LOW alone: never-written space, TRIM and VM disks read as zeros
+      uniform_pattern_fill: 4      # 0xFF / repeated byte across free space
+      massive_high_entropy: 4      # random fill across free space
 
   hidden_files:
     medium_at: 4
@@ -106,6 +107,8 @@ detection:
       - 'encryptable'
       - 'wofcompresseddata'
     large_stream_threshold_bytes: 1048576  # 1 MB
+    ntfs_metadata_prefixes:        # NTFS's own streams ($UsnJrnl:$J, $Repair:$Corrupt ...)
+      - '\$extend\'
 
   tool_traces:
     medium_at: 4
@@ -116,6 +119,10 @@ detection:
       registry_installed: 4        # tool listed in SOFTWARE Uninstall keys (MEDIUM)
       run_mru_command: 4           # tool command in RunMRU (MEDIUM)
       mft_file_present: 2          # tool binary or folder found in MFT (LOW)
+      builtin_tool_executed: 2     # built-in Windows tool ran (LOW: Windows runs them itself)
+    builtin_system_paths:          # Windows' own copies of built-in tools are not reported
+      - '\windows\'
+      - '$orphanfiles\'
     known_tools:
       sdelete:
         names: ['sdelete.exe', 'sdelete64.exe']
@@ -141,10 +148,12 @@ detection:
         names: ['wevtutil.exe']
         category: 'Log Manipulation'
         description: 'Windows Event Log utility (often used to clear logs)'
+        builtin: true              # part of Windows: see builtin_tool_executed
       cipher:
         names: ['cipher.exe']
         category: 'Disk Wiper'
         description: 'Windows built-in cipher /w free space wiping command'
+        builtin: true
 
 # ---------------------------------------------------------------- Stage 5 analysis & ML
   analysis:

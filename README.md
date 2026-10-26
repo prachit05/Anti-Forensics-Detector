@@ -119,3 +119,39 @@ Scores and thresholds are in `config/settings.yaml` under `detection:`.
 **Known limits:** a careful attacker can also edit `$FN` (for example by moving the file) or
 stomp forward; a copy that keeps every date looks like `si_before_fn` and stays LOW unless
 other indicators join it; log editing that leaves record IDs contiguous is not detectable here.
+
+## Stages 4 and 5: other detectors, correlation, timeline and ML
+
+`run_detectors.py` runs all six detectors, then correlation and the timeline. Free-space
+analysis needs a disk image; the other modules also work on an artifact folder. Add `--ml`
+for the Isolation Forest check and `--timeline` to print the timeline narrative.
+
+| Module | File | Looks for |
+|---|---|---|
+| File wiping (T1070.004) | `afd/detectors/file_wiping.py` | SDelete-style names (`ZZZZZZZZ.ZZZ`), random wiper names, deleted resident content overwritten with 0x00 / 0xFF / a repeated byte |
+| Free-space wiping (T1070.004) | `afd/detectors/freespace.py` | Zero, 0xFF, repeated-byte or random fill across **unallocated clusters only** (read from `$Bitmap`) |
+| Hidden files (T1564.004, T1036.008) | `afd/detectors/hidden_files.py` | Script or oversized Alternate Data Streams, executables or archives with a disguising extension |
+| Tool traces (T1070) | `afd/detectors/tool_traces.py` | CCleaner, SDelete, Eraser, BleachBit, timestamp editors, `wevtutil`, `cipher` in prefetch, UserAssist, Uninstall keys, RunMRU and the MFT |
+| Correlation | `afd/analysis/scoring.py` | A tool run next to its matching action raises both; 3+ techniques at MEDIUM/HIGH within 2 hours form a campaign |
+| Timeline | `afd/analysis/timeline.py` | All dated findings in order, grouped into episodes (30-minute gaps) |
+| ML (optional) | `afd/analysis/ml_anomaly.py` | Isolation Forest outliers in log intervals and `$SI`/`$FN` differences |
+
+**False positives found on the clean Windows 11 image, and how they are handled**
+
+On a clean, freshly installed and updated VM the first version raised 3 HIGH and 2,256
+MEDIUM findings. All of these are now LOW or not reported:
+
+| What a clean system did | Was | Now |
+|---|---|---|
+| Windows setup and an update produced 100,000+ LOW findings in two one-hour windows, which the correlation turned into 2 "campaigns" | HIGH | Only MEDIUM/HIGH findings from rule-based detectors count towards a campaign; ML never does |
+| Windows ran `wevtutil` 4 times during setup (registering event logs) | HIGH | Built-in tools (`wevtutil`, `cipher`) are LOW when run alone, and become MEDIUM only when the matching action (a log clear, a wipe) is found nearby. Windows' own copies under `\Windows\` are not reported |
+| 2,028 small deleted servicing files (`.manifest`, `.cat`) were all zeros, 341 of them completely | MEDIUM | A zero fill alone is LOW; 0xFF or another repeated byte is still MEDIUM; a pattern seen only in the first 64 bytes counts less |
+| 361 deleted catalog files named after their hash (`<sha256>.cat`, `Wrapper-<sha256>~31bf...~amd64~~10.0.26100.9444.cat`) looked like random wiper names | MEDIUM | A wiper's random name is a plain run of letters and digits; hash names and names with separators are not counted |
+| About half of the unallocated space was zeros (never-written VM disk) | MEDIUM | Zero fill alone is LOW; it is raised when a free-space wiper is also found to have run |
+| NTFS's own streams (`$UsnJrnl:$J`, `$Repair:$Corrupt`, `$Tops:$T`) | MEDIUM | Files under `\$Extend` are NTFS metadata and are skipped |
+| Isolation Forest outliers (Windows servicing files, setup-time log intervals) | MEDIUM | ML findings are always LOW supporting evidence |
+
+The timeline and the on-screen list show MEDIUM and above by default (`--min-confidence`);
+`findings.json` always keeps every finding. Each case is covered by a regression test in
+`tests/test_false_positive_fixes.py`, together with a control showing that real tampering is
+still caught.

@@ -60,6 +60,9 @@ DEFAULT_CONFIG = {
         "wofcompresseddata",
     ],
     "large_stream_threshold_bytes": 1048576,  # 1 MB
+    # NTFS keeps its own metadata in named streams here ($UsnJrnl:$J, $Repair:$Corrupt,
+    # $Tops:$T ...). They exist on every NTFS volume and are not hiding anything.
+    "ntfs_metadata_prefixes": ["\\$extend\\"],
 }
 
 # Signatures for header verification
@@ -236,8 +239,10 @@ def detect(mft: pd.DataFrame, cfg: dict | None = None) -> list[Finding]:
 
     findings: list[Finding] = []
 
-    # Filter active files and recent deleted files (skip NTFS internal entries < 24)
-    df = mft[mft["entry"] >= 24]
+    # Skip NTFS internal entries (< 24) and NTFS metadata files under \$Extend
+    meta = tuple(p.lower() for p in cfg.get("ntfs_metadata_prefixes", []))
+    paths = mft["path"].fillna("").str.lower()
+    df = mft[(mft["entry"] >= 24) & ~paths.str.startswith(meta)] if meta else mft[mft["entry"] >= 24]
 
     for _, row in df.iterrows():
         # Check 1: Alternate Data Streams

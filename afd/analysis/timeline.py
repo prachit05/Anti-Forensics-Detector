@@ -201,23 +201,29 @@ def _generate_episode_narrative(entries: list[TimelineEntry]) -> str:
     if not desc_parts:
         return f"{len(entries)} anti-forensics activity events observed."
 
-    return "Perpetrator initiated actions: " + "; then ".join(desc_parts) + "."
+    # "likely", not proof: describe what the artifacts show, not who did it
+    return "Artifacts in this window indicate: " + "; then ".join(desc_parts) + "."
 
 
 def build_timeline(
     findings: list[Finding],
     episode_gap_minutes: float = 30.0,
+    min_confidence: Confidence = Confidence.LOW,
 ) -> Timeline:
     """Construct a unified chronological timeline and partition it into activity episodes.
 
     Parameters:
         findings: list of Finding objects from detectors
         episode_gap_minutes: time gap in minutes that triggers a new activity episode
+        min_confidence: leave out weaker findings. A clean Windows install produces
+            100,000+ LOW findings, which would bury the cover-up story.
     """
     dated: list[TimelineEntry] = []
     undated: list[Finding] = []
 
     for f in findings:
+        if f.confidence < min_confidence:
+            continue
         if f.event_time is None:
             undated.append(f)
             continue

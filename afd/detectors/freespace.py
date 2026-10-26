@@ -25,6 +25,21 @@ Physical signatures in unallocated space:
   4. Random-wiped space: Large contiguous blocks with near-maximal Shannon entropy
      (7.95 - 8.00 bits/byte) that lack any valid file headers (no ZIP, PE, JPEG signatures).
 
+Which bytes are "free space"
+----------------------------
+NTFS records which clusters are in use in the $Bitmap system file: one bit per cluster,
+1 = allocated. Only 1 MB regions whose clusters are *all* free are sampled, so live file
+data never counts. If $Bitmap cannot be read, the whole volume is sampled instead and the
+finding says so.
+
+Why zero-fill alone is LOW
+--------------------------
+Space that was never written reads as zeros, and so does space freed on an SSD with TRIM
+or on a thin-provisioned VM disk. The clean Windows 11 test VM had about half of its
+sampled regions zero-filled. A zero fill therefore needs corroboration (a free-space
+wiper run, linked by the Stage 5 correlation) to reach MEDIUM. A 0xFF fill or random
+fill across free space has no such everyday cause and stays MEDIUM or above.
+
 Honest limits
 -------------
 - Analysis requires access to the raw disk image (E01, RAW, DD, fixed VHD) or an
@@ -41,6 +56,7 @@ from collections import Counter
 from pathlib import Path
 
 import numpy as np
+import pytsk3
 
 from afd.core.config import detector_settings, merge_config
 from afd.core.finding import Confidence, Finding, assign_ids, confidence_from_score, sort_findings
@@ -55,11 +71,44 @@ DEFAULT_CONFIG = {
     "high_entropy_threshold": 7.96,   # near maximal entropy (random wipe)
     "min_consecutive_chunks": 3,
     "weights": {
-        "massive_zero_fill": 5,
+        "massive_zero_fill": 2,
         "uniform_pattern_fill": 5,
         "massive_high_entropy": 4,
     },
 }
+
+
+def free_chunk_offsets(bitmap: bytes, cluster_count: int, cluster_size: int,
+                       chunk_size: int, max_chunks: int) -> tuple[list[int], int]:
+    """Volume offsets of up to max_chunks evenly spread chunks whose clusters are all free.
+
+    bitmap is the content of NTFS $Bitmap: bit i (least significant first) of byte b
+    describes cluster b*8+i, 1 = allocated. Returns (offsets, total fully-free chunks).
+    """
+    bits = np.unpackbits(np.frombuffer(bitmap, dtype=np.uint8), bitorder="little")[:cluster_count]
+    per_chunk = max(1, chunk_size // cluster_size)
+    n = len(bits) // per_chunk
+    if n == 0:
+        return [], 0
+    allocated = bits[:n * per_chunk].reshape(n, per_chunk).any(axis=1)
+    free = np.nonzero(~allocated)[0]
+    if len(free) > max_chunks:
+        free = free[np.linspace(0, len(free) - 1, max_chunks).astype(int)]
+    total_free = int((~allocated).sum())
+    return [int(i) * per_chunk * cluster_size for i in free], total_free
+
+
+def analyze_offsets(reader_fn, offsets: list[int], chunk_size: int) -> list[dict]:
+    """Measure entropy and uniformity of the chunks at the given offsets."""
+    results = []
+    for offset in offsets:
+        chunk = reader_fn(offset, chunk_size)
+        if not chunk:
+            continue
+        entropy, uniformity, dom_byte = calculate_entropy_and_uniformity(chunk)
+        results.append({"offset": offset, "size": len(chunk), "entropy": round(entropy, 4),
+                        "uniformity_pct": round(uniformity, 2), "dominant_byte": dom_byte})
+    return results
 
 
 def calculate_entropy_and_uniformity(data: bytes) -> tuple[float, float, int]:
@@ -144,8 +193,29 @@ def detect_from_image(image_path: Path, cfg: dict | None = None) -> list[Finding
         except Exception:
             return b""
 
-    sample_results = analyze_unallocated_stream(read_func, vol_size, cfg)
-    return _evaluate_samples(sample_results, f"disk image {image_path.name}", cfg)
+    # Prefer genuinely unallocated clusters, from the volume's own $Bitmap
+    scope = "whole volume (allocation bitmap unavailable)"
+    sample_results = []
+    if vol:
+        try:
+            fs = pytsk3.FS_Info(img, offset=vol_offset)
+            bm = fs.open("/$Bitmap")
+            bitmap = bm.read_random(0, bm.info.meta.size)
+            offsets, total_free = free_chunk_offsets(
+                bitmap, fs.info.block_count, fs.info.block_size,
+                cfg["chunk_size_bytes"], cfg["max_chunks_to_sample"])
+            sample_results = analyze_offsets(read_func, offsets, cfg["chunk_size_bytes"])
+            scope = (f"unallocated clusters only ({total_free:,} fully free "
+                     f"{cfg['chunk_size_bytes'] // 1024} KB regions, read from $Bitmap)")
+        except Exception:
+            sample_results = []
+    if not sample_results:
+        sample_results = analyze_unallocated_stream(read_func, vol_size, cfg)
+    findings = _evaluate_samples(sample_results, f"disk image {image_path.name}", cfg)
+    for f in findings:
+        f.evidence["scope"] = scope
+        f.reasons.append(f"Sampled: {scope}.")
+    return findings
 
 
 def detect_from_buffer(data: bytes, source_name: str = "unallocated space dump", cfg: dict | None = None) -> list[Finding]:
@@ -198,8 +268,9 @@ def _evaluate_samples(samples: list[dict], subject_name: str, cfg: dict) -> list
                 "pure 0x00 bytes (zero-fill), characteristic of 'sdelete -z' or 'cipher /w' pass 1.",
             ],
             benign_notes=[
-                "Freshly formatted partitions, new VM disks, or SSDs with active TRIM "
-                "can also contain large zero-filled regions.",
+                "Space that was never written, freshly formatted partitions, thin-provisioned VM "
+                "disks and SSDs with TRIM all read as zeros, so a zero fill alone is LOW. It is "
+                "raised when a free-space wiping tool is also found to have run.",
             ],
             evidence={
                 "zero_chunks": len(zero_chunks),
