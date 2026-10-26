@@ -1,5 +1,6 @@
 """Tests for hidden and disguised files detector."""
 from datetime import datetime, timezone
+import pandas as pd
 import pytest
 
 from afd.core.finding import Confidence
@@ -73,3 +74,18 @@ def test_zip_header_disguised_as_txt_detected(tmp_path):
     findings = run(tmp_path, entries)
     assert len(findings) == 1
     assert "ZIP" in findings[0].reasons[0]
+
+
+def test_non_resident_disguised_exe_found_once_head_is_read(tmp_path):
+    """A real executable renamed to .jpg is too big to be resident: its header is read from the image."""
+    entries = [file_with_data(50, "holiday.jpg", b"MZ" + b"\x00" * 30), file_with_data(51, "a.txt", b"text")]
+    mft = load_mft(write_mft(tmp_path / "$MFT", entries))
+    # pretend both are non-resident (big): the $MFT then has no header bytes for them
+    mft.loc[mft["entry"].isin([50, 51]), "resident"] = False
+    mft.loc[mft["entry"].isin([50, 51]), "head"] = pd.Series([b"", b""], index=mft.index[mft["entry"].isin([50, 51])])
+    assert [f for f in hidden_files.detect(mft) if "mismatch" in f.title.lower()] == []
+
+    assert hidden_files.head_candidates(mft) == [50, 51]
+    filled = hidden_files.with_heads(mft, {50: b"MZ\x90\x00\x03", 51: b"plain text"})
+    hits = [f for f in hidden_files.detect(filled) if "mismatch" in f.title.lower()]
+    assert len(hits) == 1 and "holiday.jpg" in hits[0].title

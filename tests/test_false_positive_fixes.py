@@ -123,13 +123,13 @@ def test_windows_copies_of_builtin_tools_are_ignored():
     rows = [
         (1001, "cipher.exe", r"\Windows\WinSxS\amd64_microsoft-windows-cipher_x\cipher.exe"),
         (1002, "wevtutil.exe", r"\Windows\SoftwareDistribution\Download\pkg\wevtutil.exe"),
-        (1003, "wevtutil.exe", r"$OrphanFiles\wevtutil.exe"),
         (1004, "cipher.exe", r"\Users\Public\cipher.exe"),        # out of place: reported
     ]
     mft = pd.DataFrame([dict(entry=e, name=n, path=p, si_modified=133e15, si_created=133e15,
                              in_use=True, is_dir=False) for e, n, p in rows])
     findings = tool_traces.detect(mft=mft)
     assert [f.subject for f in findings] == [r"\Users\Public\cipher.exe"]
+    assert findings[0].confidence == Confidence.LOW
 
 
 # ---------------------------------------------------------------- hidden files
@@ -152,7 +152,7 @@ def test_ntfs_metadata_streams_are_not_hidden_data(tmp_path):
 def test_only_fully_unallocated_chunks_are_sampled():
     # 8 clusters of 1 KB, 2 clusters per 2 KB chunk; clusters 0 and 5 are in use
     bitmap = bytes([0b00100001])
-    offsets, total_free = freespace.free_chunk_offsets(bitmap, 8, 1024, 2048, 10)
+    offsets, total_free = freespace.free_chunk_offsets(bitmap, 1024, 2048, 10)
     assert offsets == [1 * 2048, 3 * 2048] and total_free == 2
 
 

@@ -10,8 +10,8 @@ Anti-forensic actions do not happen in isolation. A perpetrator follows a sequen
 
 When viewed as disconnected alerts, individual findings might be overlooked or deemed
 ambiguous. However, when sequenced chronologically on a unified timeline:
-  - Temporal proximity provides overwhelming circumstantial evidence of deliberate tampering.
-  - The narrative of the cover-up becomes plain and indisputable for courts and examiners.
+  - Temporal proximity is strong circumstantial support that the actions belong together.
+  - The sequence of the cover-up becomes much easier for an examiner to read and explain.
   - "Episodes" or "tampering clusters" group actions that occurred within a tight window
     (e.g. within 30 minutes of each other).
 
@@ -160,7 +160,7 @@ def _assign_phase(module: str, technique: str, title: str) -> str:
     tit = title.lower()
 
     if m == "tool_traces":
-        if "execution" in t or "executed" in tit:
+        if "exec" in t or "runmru" in t or "executed" in tit:
             return "Tool Execution"
         if "installed" in t or "software" in tit:
             return "Tool Installation"
@@ -181,13 +181,14 @@ def _assign_phase(module: str, technique: str, title: str) -> str:
 def _generate_episode_narrative(entries: list[TimelineEntry]) -> str:
     """Synthesize a short plain-English narrative for an episode."""
     modules = set(e.module for e in entries)
-    phases = [e.phase for e in entries]
 
     desc_parts = []
-    if "tool_traces" in modules:
-        tool_names = [e.subject for e in entries if e.module == "tool_traces"]
-        tools_str = ", ".join(set(tool_names))
-        desc_parts.append(f"anti-forensic utility ({tools_str}) was launched")
+    run = sorted({e.subject for e in entries if e.phase == "Tool Execution"})
+    present = sorted({e.subject for e in entries if e.module == "tool_traces" and e.phase != "Tool Execution"})
+    if run:
+        desc_parts.append(f"anti-forensic tool run ({', '.join(run)})")
+    if present:
+        desc_parts.append(f"anti-forensic tool present or installed ({', '.join(present)})")
 
     if "timestomp" in modules:
         desc_parts.append("file timestamps were manipulated (timestomped)")
@@ -198,11 +199,14 @@ def _generate_episode_narrative(entries: list[TimelineEntry]) -> str:
     if "log_wiping" in modules:
         desc_parts.append("Windows event logs were cleared or altered")
 
+    if "hidden_files" in modules:
+        desc_parts.append("data was hidden in an ADS or disguised file")
+
     if not desc_parts:
         return f"{len(entries)} anti-forensics activity events observed."
 
-    # "likely", not proof: describe what the artifacts show, not who did it
-    return "Artifacts in this window indicate: " + "; then ".join(desc_parts) + "."
+    # Listed by kind, not strictly by time: the entry table above gives the exact order.
+    return "Likely activity in this episode: " + "; ".join(desc_parts) + "."
 
 
 def build_timeline(

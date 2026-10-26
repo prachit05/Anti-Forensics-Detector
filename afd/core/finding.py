@@ -74,6 +74,20 @@ class Finding:
             "time_meaning": self.time_meaning,
         }
 
+    @classmethod
+    def from_dict(cls, d: dict) -> "Finding":
+        """Inverse of to_dict (used to reopen a saved case's findings.json)."""
+        when = d.get("event_time")
+        return cls(
+            module=d["module"], technique=d["technique"], mitre=d.get("mitre", ""),
+            title=d["title"], confidence=Confidence[d["confidence"]], score=int(d.get("score", 0)),
+            subject=d.get("subject", ""), artifact=d.get("artifact", ""),
+            reasons=list(d.get("reasons", [])), benign_notes=list(d.get("benign_notes", [])),
+            evidence=dict(d.get("evidence", {})),
+            event_time=datetime.fromisoformat(when) if when else None,
+            time_meaning=d.get("time_meaning", ""), id=d.get("id", ""),
+        )
+
 
 _ID_PREFIX = {"timestomp": "TS", "log_wiping": "LW", "file_wiping": "FW",
               "freespace": "FS", "hidden_files": "HF", "tool_traces": "TT"}

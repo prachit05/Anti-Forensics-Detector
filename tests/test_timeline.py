@@ -74,7 +74,7 @@ def test_episode_clustering_single_episode():
     assert ep.event_count == 3
     assert ep.start_time == t0
     assert ep.end_time == t2
-    assert "SDelete" in ep.narrative or "launched" in ep.narrative
+    assert "SDelete" in ep.narrative or "tool run" in ep.narrative
 
 
 def test_episode_clustering_multiple_episodes():

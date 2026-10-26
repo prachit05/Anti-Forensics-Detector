@@ -225,6 +225,27 @@ def _check_header_mismatch(row: pd.Series, cfg: dict) -> Finding | None:
     )
 
 
+def head_candidates(mft: pd.DataFrame, limit: int = 50000) -> list[int]:
+    """MFT entries whose header we cannot see in the $MFT alone: in-use, non-resident files
+    with an extension that the mismatch check covers. Their first bytes live in clusters
+    on disk, so they can only be checked when a full disk image is available."""
+    if mft.empty:
+        return []
+    ext = mft["name"].astype(str).str.lower().str.extract(r"(\.[^.\\]+)$", expand=False)
+    mask = ((mft["entry"] >= 24) & mft["in_use"] & ~mft["is_dir"] & (mft["resident"] == False)  # noqa: E712
+            & (mft["size"] >= 4) & ext.isin(BENIGN_EXTENSIONS_PE_MISMATCH))
+    return [int(n) for n in mft.loc[mask, "entry"].head(limit)]
+
+
+def with_heads(mft: pd.DataFrame, heads: dict[int, bytes]) -> pd.DataFrame:
+    """Return a copy of mft with the 'head' column filled in from {entry: first bytes}."""
+    if not heads:
+        return mft
+    out = mft.copy()
+    out["head"] = [heads.get(int(n), h) for n, h in zip(out["entry"], out["head"])]
+    return out
+
+
 def detect(mft: pd.DataFrame, cfg: dict | None = None) -> list[Finding]:
     """Scan MFT entries for Alternate Data Streams and file type masquerading.
 

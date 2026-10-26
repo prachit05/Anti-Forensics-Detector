@@ -10,19 +10,21 @@ Findings mean "likely", not proof. Scope is Windows and NTFS only.
 
 ```
 CF/
-├── app.py                  Streamlit dashboard (Stage 6)
-├── check_env.py            Checks that all libraries import
-├── requirements.txt
-├── config/settings.yaml    Detection thresholds (Stage 3+)
-├── afd/
-│   ├── core/               Evidence loading, hashing, chain-of-custody log, Finding model
-│   ├── parsers/            image_reader, mft, evtx, registry, prefetch     (Stage 2)
-│   ├── detectors/          timestomp, log_wiping                            (Stage 3)
-│   │                       file_wiping, freespace, hidden_files, tool_traces (Stage 4)
-│   ├── analysis/           scoring, timeline, ml_anomaly                    (Stage 5)
-│   └── reporting/          HTML/PDF report, CSV/JSON export, templates/     (Stage 6)
-├── tests/                  pytest tests and sample_data/
-└── docs/                   Your own notes (test plan records, screenshots)
+â”œâ”€â”€ app.py                  Streamlit dashboard (Stage 6)
+â”œâ”€â”€ check_env.py            Checks that all libraries import
+â”œâ”€â”€ requirements.txt
+â”œâ”€â”€ config/settings.yaml    Detection thresholds (Stage 3+)
+â”œâ”€â”€ afd/
+â”‚   â”œâ”€â”€ core/               Evidence loading, hashing, chain-of-custody log, Finding model
+â”‚   â”œâ”€â”€ parsers/            image_reader, mft, evtx, registry, prefetch     (Stage 2)
+â”‚   â”œâ”€â”€ detectors/          timestomp, log_wiping                            (Stage 3)
+â”‚   â”‚                       file_wiping, freespace, hidden_files, tool_traces (Stage 4)
+â”‚   â”œâ”€â”€ analysis/           scoring, timeline, ml_anomaly                    (Stage 5)
+â”‚   â”œâ”€â”€ reporting/          HTML/PDF report, CSV/JSON export, templates/     (Stage 6)
+â”‚   â””â”€â”€ pipeline.py         One analysis run, shared by the CLI and the dashboard
+â”œâ”€â”€ tests/                  pytest tests and sample_data/
+â”œâ”€â”€ run_detectors.py        Command-line run (same pipeline as the dashboard)
+â””â”€â”€ docs/                   TEST_PLAN.md (Stage 7), DEMO_SCRIPT.md and VIVA_QA.md (Stage 8)
 ```
 
 ## Setup (Windows 10/11, Python 3.12 64-bit)
@@ -73,8 +75,8 @@ $env:AFD_EVIDENCE_DIR = "D:\evidence"
 Suggested layout inside the evidence folder:
 ```
 C:\forensics\evidence\
-├── images\       win10_test.E01 (or .dd/.raw) plus FTK Imager's .txt hash log
-└── artifacts\    $MFT, *.evtx, NTUSER.DAT, SOFTWARE, SYSTEM, *.pf
+â”œâ”€â”€ images\       win10_test.E01 (or .dd/.raw) plus FTK Imager's .txt hash log
+â””â”€â”€ artifacts\    $MFT, *.evtx, NTUSER.DAT, SOFTWARE, SYSTEM, *.pf
 ```
 
 - Two inputs are supported: **exported artifacts** (the primary input: small and fast) and
@@ -155,3 +157,40 @@ The timeline and the on-screen list show MEDIUM and above by default (`--min-con
 `findings.json` always keeps every finding. Each case is covered by a regression test in
 `tests/test_false_positive_fixes.py`, together with a control showing that real tampering is
 still caught.
+## Stage 6: dashboard and report
+
+```powershell
+streamlit run app.py
+```
+
+- **Sidebar:** run a new analysis on an image or artifact folder, or reopen a saved case (no re-parsing).
+- **Overview:** counts per confidence level, which modules ran or were skipped and why, campaign alerts, episodes.
+- **Findings:** filter by confidence, module or text; each finding shows its reasons, the innocent explanations considered, and the raw evidence.
+- **Timeline:** chart and episode tables. *Time meaning* says what each time stands for.
+- **Evidence & custody:** hashes, *Re-verify evidence hashes*, *Compute media hash* (to compare with FTK Imager's `.txt`), and the custody log.
+- **Report & export:** writes `report.html`, `report.pdf`, `findings.csv` and `analysis.json` to the case folder. Each output is hashed into the custody log.
+
+The report's **conclusion** comes from the examiner's own text box. The tool never writes it; if the box is empty, the report shows a placeholder. Everything else in the report (hashes, method, findings, timeline, limits, custody log) is filled from the analysis.
+
+Command-line equivalent: `python run_detectors.py <image or folder> <case> --report`.
+
+Every run saves `findings.json`, `timeline.json` and `case_summary.json` in the case folder.
+
+## Stage 7: testing and false positives
+
+See [docs/TEST_PLAN.md](docs/TEST_PLAN.md). It covers:
+- building the VM
+- every anti-forensic action, with exact commands
+- FTK Imager capture and hash checks
+- running the tool
+- the clean-image false-positive check
+- the Autopsy comparison
+- the settings that control false positives
+
+Unit tests: `python -m pytest -q`. The dashboard test uses Streamlit's own test runner, so no browser is needed.
+
+## Stage 8: demo and viva
+
+- [docs/DEMO_SCRIPT.md](docs/DEMO_SCRIPT.md): 10-minute demo with roles and a fallback.
+- [docs/VIVA_QA.md](docs/VIVA_QA.md): likely questions with short answers.
+

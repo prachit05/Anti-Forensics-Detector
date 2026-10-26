@@ -209,6 +209,27 @@ def extract_artifacts(image_path: Path, out_dir: Path, case=None) -> list[Path]:
     return extracted
 
 
+def read_file_heads(image_path: Path, entries: list[int], nbytes: int = 64) -> dict[int, bytes]:
+    """Read the first nbytes of the default $DATA stream of each MFT entry (inode) on the
+    Windows volume. Used for magic-number checks on files too big to be resident in the
+    $MFT. In NTFS, The Sleuth Kit's inode number is the MFT entry number."""
+    img = open_image(image_path)
+    vol = pick_windows_volume(img, find_ntfs_volumes(img))
+    if vol is None or not entries:
+        return {}
+    fs = pytsk3.FS_Info(img, offset=vol["offset"])
+    heads = {}
+    for entry in entries:
+        try:
+            fs_file = fs.open_meta(inode=int(entry))
+            size = fs_file.info.meta.size
+            if size:
+                heads[int(entry)] = fs_file.read_random(0, min(nbytes, size))
+        except (OSError, IOError):
+            continue            # unreadable or reallocated entry: leave it unchecked
+    return heads
+
+
 def media_hash(image_path: Path) -> dict:
     """Hash the disk data inside the image (comparable with FTK Imager's hash).
     Reads the whole disk, so it takes a few minutes for a 50 GB image."""
